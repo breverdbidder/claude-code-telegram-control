@@ -1,91 +1,70 @@
-# AgentRemote v3.0
+# AgentRemote v4.1 - MCP Server + GitHub Webhooks
 
-🚀 Dual-mode cloud execution system for mobile AI development automation.
+## New in v4.1
 
-## Features
+### 🔌 MCP Server (`mcp_server.py`)
+Gives Claude Code 4 Telegram tools during autonomous sessions:
 
-- ☁️ **Cloud execution** via GitHub Actions
-- 📱 **Mobile-first** Telegram interface  
-- 🖥️ **Desktop compatible** - use from anywhere
-- 🔄 **Auto-detection** of execution mode
-- 24/7 **Always available**
-- ⚡ **Serverless** architecture
+| Tool | Description |
+|------|-------------|
+| `telegram_send` | Send progress updates to your phone |
+| `telegram_ask` | Ask questions with inline keyboard buttons, waits for tap |
+| `telegram_notify` | Styled alerts (success/error/warning/info) |
+| `telegram_send_file` | Send files directly to Telegram |
 
-## Quick Start
-
-### 1. Deploy to Render.com (Recommended)
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
-
-**Environment Variables Required:**
-- `TELEGRAM_BOT_TOKEN` - Get from @BotFather
-- `GH_TOKEN` - GitHub Personal Access Token
-
-### 2. Configure GitHub Secrets
-
-Go to repository Settings → Secrets → Actions:
-
-Required secrets:
-- `ANTHROPIC_API_KEY` - Claude API key
-- `GREPTILE_API_KEY` - Greptile API key  
-- `TELEGRAM_BOT_TOKEN` - Telegram bot token
-- `GH_TOKEN` - GitHub PAT with repo + workflow scopes
-
-### 3. Test in Telegram
-
-Send to your bot:
-```
-/start
-/cloud
-/task Create a test file named hello.txt
+#### Setup in `.claude/CLAUDE.md`:
+```json
+{
+  "mcpServers": {
+    "agentremote": {
+      "command": "python3",
+      "args": ["/path/to/mcp_server.py"],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "your-bot-token",
+        "TELEGRAM_CHAT_ID": "your-chat-id"
+      }
+    }
+  }
+}
 ```
 
-## Commands
+### 📡 GitHub Webhook Notifications (`.github/workflows/webhook_notify.yml`)
+Sends Telegram alerts for repo events:
 
-- `/start` - Initialize bot
-- `/task [description]` - Execute development task
-- `/cloud` - Force cloud execution mode
-- `/local` - Force local execution mode
-- `/auto` - Auto-detect mode
-- `/status` - Check system status
+| Event | Notification |
+|-------|-------------|
+| New Issue | 🆕 Title, author, labels |
+| Issue Closed | ✅ Title, author |
+| New PR | 🔀 Title, author |
+| PR Merged | 🎉 Title, author |
+| Review Requested | 👀 PR title, reviewer |
+| CI Failed | 🔴 Workflow name, link |
+| CI Passed | ✅ Workflow name, link |
+| Push to main | 📦 Commit message, author |
 
-## Architecture
+#### Required Secret:
+Add `TELEGRAM_CHAT_ID` to GitHub Secrets (your Telegram user/chat ID).
 
-**Telegram Bot** → **GitHub Actions** → **Claude Sonnet 4** → **Results**
+Already configured: `TELEGRAM_BOT_TOKEN`
 
-- Bot runs 24/7 on Render.com (free tier)
-- Tasks execute via GitHub Actions (serverless)
-- Claude Sonnet 4 performs actual work
-- Results committed to repository
-- Notifications sent back to Telegram
+#### Test:
+Go to Actions → "AgentRemote Webhook → Telegram" → Run workflow → Enter test message.
 
-## Cost
+---
 
-- Render.com: **FREE** (750 hours/month)
-- GitHub Actions: **FREE** (2,000 minutes/month)
-- Anthropic API: **$6-20/month** (pay as you go)
+## Existing Features (v3.0/v4.0)
+- `/task` - Execute dev tasks via cloud (GitHub Actions) or local (Claude Code)
+- `/cloud` `/local` `/auto` - Mode switching
+- `/status` `/queue` `/history` `/stats` - Monitoring
+- Smart Router integration
+- Auth + rate limiting
+- Dual-mode: LOCAL + CLOUD execution
 
-**Total: $6-20/month vs $450/month alternatives**
-
-## Example Tasks
-
-```
-/task Fix the bug in bot_v3.py line 45
-/task Create a comprehensive README for the repository
-/task Add error handling to cloud_executor.py
-/task Refactor the notification system for better UX
-/task Create unit tests for all core functions
-```
-
-## Security
-
-- All secrets stored in GitHub Secrets (encrypted)
-- No credentials in code or configuration
-- Environment variables injected at runtime
-- Tokens should be rotated regularly
-
-## Support
-
-Built with Claude AI - Zero human in the loop deployment ✅
-
-Repository: https://github.com/breverdbidder/claude-code-telegram-control
+## Secrets Required (5 total)
+| Secret | Purpose |
+|--------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot API token from @BotFather |
+| `TELEGRAM_CHAT_ID` | Your Telegram chat ID (NEW) |
+| `GH_TOKEN` | GitHub PAT for repo dispatch |
+| `ANTHROPIC_API_KEY` | Claude API for cloud execution |
+| `GREPTILE_API_KEY` | Code quality audits |
