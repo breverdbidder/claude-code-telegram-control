@@ -24,7 +24,7 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install anthropic requests greptile-py
+        pip install -r requirements.txt
     
     - name: Execute Task with Claude
       id: execute
