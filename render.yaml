@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: agentremote-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_v3.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GH_TOKEN
+        sync: false
+    plan: free
