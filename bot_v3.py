@@ -8,13 +8,18 @@ import os
 import sys
 import psutil
 import requests
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import json
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GITHUB_TOKEN = os.getenv('GH_TOKEN', os.getenv('GITHUB_TOKEN'))
 GITHUB_REPO = "breverdbidder/claude-code-telegram-control"
+n# Approval system files
+APPROVAL_FILE = os.path.expanduser("~/claude_code_tasks/pending_approvals.json")
+APPROVAL_RESPONSES = os.path.expanduser("~/claude_code_tasks/approval_responses.json")
 
 # Execution mode state (per user)
 user_execution_mode = {}  # chat_id -> "local" or "cloud"
@@ -48,6 +53,7 @@ I can execute development tasks for you!
 /local - Switch to local mode  
 /auto - Auto-detect mode
 /status - Check execution mode
+/approvals - View pending approvals
 
 *Example:*
 `/task Fix BECA scraper regex issue from GitHub Issue #47`
@@ -233,6 +239,8 @@ def main():
     app.add_handler(CommandHandler("local", local_mode))
     app.add_handler(CommandHandler("auto", auto_mode))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("approvals", approvals_command))
+    app.add_handler(CallbackQueryHandler(handle_approval_callback))
     
     # Start bot
     print("✅ AgentRemote v3.0 is running!")
@@ -241,3 +249,94 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+async def approvals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View and manage pending approvals"""
+    if not os.path.exists(APPROVAL_FILE):
+        await update.message.reply_text("✅ No pending approvals")
+        return
+    
+    with open(APPROVAL_FILE, 'r') as f:
+        approvals = json.load(f)
+    
+    if not approvals:
+        await update.message.reply_text("✅ No pending approvals")
+        return
+    
+    for approval_id, data in approvals.items():
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_yes:{approval_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"approve_no:{approval_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"🔐 *Approval Request*\n\n"
+            f"*Task:* {data.get('task', 'Unknown')}\n"
+            f"*Request:* {data.get('request', 'Unknown')}\n"
+            f"*Time:* {data.get('created_at', 'Unknown')[:19]}\n\n"
+            f"Choose an action:",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle approval button clicks"""
+    query = update.callback_query
+    await query.answer()
+    
+    parts = query.data.split(':')
+    if len(parts) != 2:
+        return
+    
+    action_part = parts[0]
+    approval_id = parts[1]
+    action = action_part.split('_')[1]
+    
+    approvals = {}
+    if os.path.exists(APPROVAL_FILE):
+        with open(APPROVAL_FILE, 'r') as f:
+            approvals = json.load(f)
+    
+    if approval_id not in approvals:
+        await query.edit_message_text("⚠️ Approval request expired or already processed")
+        return
+    
+    approval_data = approvals[approval_id]
+    
+    response = {
+        'approval_id': approval_id,
+        'action': 'approved' if action == 'yes' else 'rejected',
+        'timestamp': datetime.now().isoformat(),
+        'task': approval_data.get('task', 'Unknown'),
+        'request': approval_data.get('request', 'Unknown')
+    }
+    
+    responses = {}
+    if os.path.exists(APPROVAL_RESPONSES):
+        with open(APPROVAL_RESPONSES, 'r') as f:
+            responses = json.load(f)
+    
+    responses[approval_id] = response
+    
+    os.makedirs(os.path.dirname(APPROVAL_RESPONSES), exist_ok=True)
+    with open(APPROVAL_RESPONSES, 'w') as f:
+        json.dump(responses, f, indent=2)
+    
+    del approvals[approval_id]
+    with open(APPROVAL_FILE, 'w') as f:
+        json.dump(approvals, f, indent=2)
+    
+    emoji = "✅" if action == 'yes' else "❌"
+    status = "APPROVED" if action == 'yes' else "REJECTED"
+    
+    await query.edit_message_text(
+        f"{emoji} *{status}*\n\n"
+        f"*Task:* {approval_data.get('task', 'Unknown')}\n"
+        f"*Request:* {approval_data.get('request', 'Unknown')}\n"
+        f"*Time:* {datetime.now().strftime('%H:%M:%S')}\n\n"
+        f"✓ Response sent to Claude Code",
+        parse_mode='Markdown'
+    )
