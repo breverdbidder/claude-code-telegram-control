@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """
-AgentRemote v3.0 - Telegram Bot with Dual-Mode Execution
-Supports both LOCAL (Claude Code desktop) and CLOUD (GitHub Actions) execution
+AgentRemote v3.0 - Telegram Bot with Approval System
+Supports LOCAL/CLOUD execution + human-in-the-loop approvals
 """
 
 import os
 import sys
+import json
 import psutil
 import requests
-import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes
+)
 
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GITHUB_TOKEN = os.getenv('GH_TOKEN', os.getenv('GITHUB_TOKEN'))
 GITHUB_REPO = "breverdbidder/claude-code-telegram-control"
-# Approval system files
+
+# File paths
+TASK_FILE = os.path.expanduser("~/claude_code_tasks/pending_task.txt")
 APPROVAL_FILE = os.path.expanduser("~/claude_code_tasks/pending_approvals.json")
 APPROVAL_RESPONSES = os.path.expanduser("~/claude_code_tasks/approval_responses.json")
 
 # Execution mode state (per user)
-user_execution_mode = {}  # chat_id -> "local" or "cloud"
+user_execution_mode = {}
 
 def detect_execution_mode():
     """Auto-detect if Claude Code is running locally"""
@@ -50,136 +59,107 @@ I can execute development tasks for you!
 *Commands:*
 /task [description] - Execute a task
 /cloud - Switch to cloud mode
-/local - Switch to local mode  
+/local - Switch to local mode
 /auto - Auto-detect mode
 /status - Check execution mode
 /approvals - View pending approvals
 
 *Example:*
-`/task Fix BECA scraper regex issue from GitHub Issue #47`
+/task Create hello.txt with "AgentRemote works!"
 """,
-        parse_mode="Markdown"
+        parse_mode='Markdown'
     )
 
 async def task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /task command"""
+    """Execute a task"""
     chat_id = update.effective_chat.id
     
-    if not context.args:
+    task_text = ' '.join(context.args) if context.args else None
+    if not task_text:
         await update.message.reply_text(
-            "❌ Please provide a task description.\n\n"
-            "Example: `/task Fix bug in scraper.py`",
-            parse_mode="Markdown"
+            "❌ Please provide a task description\n\n"
+            "Example: /task Create hello.txt"
         )
         return
     
-    task_description = ' '.join(context.args)
-    
-    # Get execution mode
     mode = user_execution_mode.get(chat_id, detect_execution_mode())
     
     await update.message.reply_text(
         f"🚀 *Task Queued*\n\n"
         f"*Mode:* {mode.upper()}\n"
-        f"*Task:* {task_description}\n\n"
+        f"*Task:* {task_text}\n\n"
         f"⏳ Executing...",
-        parse_mode="Markdown"
+        parse_mode='Markdown'
     )
     
-    if mode == "cloud":
-        # Trigger GitHub Actions
-        success = await trigger_github_actions(chat_id, task_description, update.message.message_id)
-        if success:
-            await update.message.reply_text(
-                "☁️ Cloud execution triggered via GitHub Actions.\n"
-                "You'll receive a notification when complete."
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Failed to trigger cloud execution.\n"
-                "Check GitHub token and repository settings."
-            )
-    else:
-        # Local execution via Claude Code
-        success = await trigger_local_execution(task_description)
-        if success:
-            await update.message.reply_text(
-                "💻 Task sent to local Claude Code.\n"
-                "Check terminal for execution status."
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Local execution failed.\n"
-                "Is Claude Code running? Try /cloud mode."
-            )
-
-async def trigger_github_actions(chat_id, task_description, message_id):
-    """Trigger GitHub Actions via repository_dispatch"""
-    if not GITHUB_TOKEN:
-        print("❌ ERROR: GITHUB_TOKEN not set")
-        return False
+    if mode == "local":
+        os.makedirs(os.path.dirname(TASK_FILE), exist_ok=True)
+        with open(TASK_FILE, 'w') as f:
+            f.write(task_text)
+        
+        await update.message.reply_text(
+            "✅ Task written to Claude Code task file\n"
+            "Claude will pick it up on next check"
+        )
     
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    payload = {
-        "event_type": "execute-task",
-        "client_payload": {
-            "task": task_description,
-            "chat_id": str(chat_id),
-            "message_id": str(message_id)
+    elif mode == "cloud":
+        if not GITHUB_TOKEN:
+            await update.message.reply_text("❌ GitHub token not configured")
+            return
+        
+        payload = {
+            "event_type": "execute-task",
+            "client_payload": {
+                "task": task_text,
+                "chat_id": str(chat_id),
+                "message_id": str(update.message.message_id)
+            }
         }
-    }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code == 204:
-            print(f"✅ GitHub Actions triggered for: {task_description}")
-            return True
-        else:
-            print(f"❌ GitHub API error: {response.status_code}")
-            print(response.text)
-            return False
-    except Exception as e:
-        print(f"❌ Error triggering GitHub Actions: {e}")
-        return False
-
-async def trigger_local_execution(task_description):
-    """Trigger local Claude Code execution"""
-    task_file = os.path.expanduser("~/claude_code_tasks/pending_task.txt")
-    
-    try:
-        os.makedirs(os.path.dirname(task_file), exist_ok=True)
-        with open(task_file, 'w') as f:
-            f.write(task_description)
-        print(f"✅ Task written to: {task_file}")
-        return True
-    except Exception as e:
-        print(f"❌ Error writing task file: {e}")
-        return False
+        
+        try:
+            response = requests.post(
+                f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
+                headers={
+                    "Authorization": f"token {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github.v3+json"
+                },
+                json=payload
+            )
+            
+            if response.status_code == 204:
+                await update.message.reply_text(
+                    "☁️ Cloud execution triggered via GitHub Actions.\n"
+                    "You'll receive a notification when complete."
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ Failed to trigger cloud execution.\n"
+                    f"Status: {response.status_code}\n"
+                    f"Response: {response.text[:200]}"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def cloud_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Switch to cloud execution mode"""
+    """Switch to cloud mode"""
     chat_id = update.effective_chat.id
     user_execution_mode[chat_id] = "cloud"
     await update.message.reply_text(
         "☁️ *Switched to CLOUD mode*\n\n"
         "Tasks will execute via GitHub Actions.\n"
         "Works even when your desktop is offline!",
-        parse_mode="Markdown"
+        parse_mode='Markdown'
     )
 
 async def local_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Switch to local execution mode"""
+    """Switch to local mode"""
     chat_id = update.effective_chat.id
     user_execution_mode[chat_id] = "local"
     await update.message.reply_text(
         "💻 *Switched to LOCAL mode*\n\n"
         "Tasks will execute via Claude Code on your desktop.\n"
-        "Faster execution but requires desktop to be running.",
-        parse_mode="Markdown"
+        "Faster but requires desktop to be running.",
+        parse_mode='Markdown'
     )
 
 async def auto_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,68 +167,34 @@ async def auto_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     mode = detect_execution_mode()
     user_execution_mode[chat_id] = mode
+    
     await update.message.reply_text(
-        f"🔄 *Auto-detect enabled*\n\n"
-        f"Detected mode: {mode.upper()}\n\n"
-        f"I'll automatically choose the best execution method.",
-        parse_mode="Markdown"
+        f"🔄 *Auto-detected mode: {mode.upper()}*\n\n"
+        f"{'Claude Code is running locally' if mode == 'local' else 'No local Claude Code detected - using cloud'}",
+        parse_mode='Markdown'
     )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check current execution mode and system status"""
+    """Check execution mode and pending tasks"""
     chat_id = update.effective_chat.id
-    current_mode = user_execution_mode.get(chat_id, "auto")
-    detected_mode = detect_execution_mode()
+    mode = user_execution_mode.get(chat_id, detect_execution_mode())
     
-    # Check GitHub Actions availability
-    github_available = bool(GITHUB_TOKEN)
+    pending_count = 0
+    if os.path.exists(APPROVAL_FILE):
+        try:
+            with open(APPROVAL_FILE, 'r') as f:
+                approvals = json.load(f)
+                pending_count = len(approvals)
+        except:
+            pass
     
-    # Check local Claude Code
-    local_available = detected_mode == "local"
-    
-    status_msg = f"""📊 *AgentRemote Status*
-
-*Current Setting:* {current_mode.upper()}
-*Auto-Detected Mode:* {detected_mode.upper()}
-
-*Availability:*
-• Local Claude Code: {'✅ Running' if local_available else '❌ Offline'}
-• GitHub Actions: {'✅ Configured' if github_available else '❌ Not configured'}
-
-*Active Mode:* {user_execution_mode.get(chat_id, detected_mode).upper()}
-"""
-    
-    await update.message.reply_text(status_msg, parse_mode="Markdown")
-
-def main():
-    """Main bot entry point"""
-    if not TELEGRAM_BOT_TOKEN:
-        print("❌ ERROR: TELEGRAM_BOT_TOKEN not set")
-        sys.exit(1)
-    
-    print("🤖 AgentRemote v3.0 starting...")
-    print(f"📡 Execution mode: {detect_execution_mode().upper()}")
-    
-    # Create application
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("task", task_command))
-    app.add_handler(CommandHandler("cloud", cloud_mode))
-    app.add_handler(CommandHandler("local", local_mode))
-    app.add_handler(CommandHandler("auto", auto_mode))
-    app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("approvals", approvals_command))
-    app.add_handler(CallbackQueryHandler(handle_approval_callback))
-    
-    # Start bot
-    print("✅ AgentRemote v3.0 is running!")
-    print("💬 Send /start in Telegram to begin")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+    await update.message.reply_text(
+        f"📊 *AgentRemote Status*\n\n"
+        f"*Execution Mode:* {mode.upper()}\n"
+        f"*Pending Approvals:* {pending_count}\n"
+        f"*GitHub Repo:* {GITHUB_REPO}",
+        parse_mode='Markdown'
+    )
 
 async def approvals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View and manage pending approvals"""
@@ -256,8 +202,12 @@ async def approvals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ No pending approvals")
         return
     
-    with open(APPROVAL_FILE, 'r') as f:
-        approvals = json.load(f)
+    try:
+        with open(APPROVAL_FILE, 'r') as f:
+            approvals = json.load(f)
+    except:
+        await update.message.reply_text("✅ No pending approvals")
+        return
     
     if not approvals:
         await update.message.reply_text("✅ No pending approvals")
@@ -297,8 +247,11 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
     
     approvals = {}
     if os.path.exists(APPROVAL_FILE):
-        with open(APPROVAL_FILE, 'r') as f:
-            approvals = json.load(f)
+        try:
+            with open(APPROVAL_FILE, 'r') as f:
+                approvals = json.load(f)
+        except:
+            pass
     
     if approval_id not in approvals:
         await query.edit_message_text("⚠️ Approval request expired or already processed")
@@ -316,8 +269,11 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
     
     responses = {}
     if os.path.exists(APPROVAL_RESPONSES):
-        with open(APPROVAL_RESPONSES, 'r') as f:
-            responses = json.load(f)
+        try:
+            with open(APPROVAL_RESPONSES, 'r') as f:
+                responses = json.load(f)
+        except:
+            pass
     
     responses[approval_id] = response
     
@@ -340,3 +296,31 @@ async def handle_approval_callback(update: Update, context: ContextTypes.DEFAULT
         f"✓ Response sent to Claude Code",
         parse_mode='Markdown'
     )
+
+def main():
+    """Start the bot"""
+    if not TELEGRAM_BOT_TOKEN:
+        print("❌ TELEGRAM_BOT_TOKEN environment variable not set")
+        sys.exit(1)
+    
+    print("🤖 AgentRemote v3.0 starting...")
+    print(f"📡 Execution mode: {detect_execution_mode().upper()}")
+    
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("task", task_command))
+    app.add_handler(CommandHandler("cloud", cloud_mode))
+    app.add_handler(CommandHandler("local", local_mode))
+    app.add_handler(CommandHandler("auto", auto_mode))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("approvals", approvals_command))
+    app.add_handler(CallbackQueryHandler(handle_approval_callback))
+    
+    print("✅ AgentRemote v3.0 is running!")
+    print("💬 Send /start in Telegram to begin")
+    
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
