@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-GITHUB_TOKEN = os.getenv('GITHUB_PAT', os.getenv('GITHUB_TOKEN'))
+GITHUB_TOKEN = os.getenv('GH_TOKEN', os.getenv('GITHUB_TOKEN'))
 GITHUB_REPO = "Everest18/claude-code-telegram-control"
 
 # Execution mode state (per user)
