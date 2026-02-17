@@ -17,7 +17,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GITHUB_TOKEN = os.getenv('GH_TOKEN', os.getenv('GITHUB_TOKEN'))
 GITHUB_REPO = "breverdbidder/claude-code-telegram-control"
-n# Approval system files
+# Approval system files
 APPROVAL_FILE = os.path.expanduser("~/claude_code_tasks/pending_approvals.json")
 APPROVAL_RESPONSES = os.path.expanduser("~/claude_code_tasks/approval_responses.json")
 
