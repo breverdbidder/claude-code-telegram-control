@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "WebFetch(*)"
+    ],
+    "deny": []
+  },
+  "mcpServers": {
+    "agentremote": {
+      "command": "python3",
+      "args": [
+        "/home/ariel/claude-telegram/mcp_server.py"
+      ],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "${TELEGRAM_BOT_TOKEN}",
+        "TELEGRAM_CHAT_ID": "${TELEGRAM_CHAT_ID}"
+      }
+    }
+  }
+}
