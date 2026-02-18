@@ -1,0 +1,31 @@
+name: Copy Telegram Secrets to BBS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy secrets using gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "Testing auth..."
+          gh auth status
+          
+          echo ""
+          echo "Setting TELEGRAM_BOT_TOKEN..."
+          echo "$BOT_TOKEN" | gh secret set TELEGRAM_BOT_TOKEN -R breverdbidder/brevard-bidder-scraper
+          
+          echo "Setting TELEGRAM_CHAT_ID..."
+          echo "$CHAT_ID" | gh secret set TELEGRAM_CHAT_ID -R breverdbidder/brevard-bidder-scraper
+          
+          echo ""
+          echo "Verifying..."
+          gh secret list -R breverdbidder/brevard-bidder-scraper | grep TELEGRAM || echo "No TELEGRAM secrets found"
+          
+          echo ""
+          echo "✅ Done"
