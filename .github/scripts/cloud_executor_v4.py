@@ -29,6 +29,9 @@ MODEL           = "claude-sonnet-4-20250514"
 
 client = Anthropic(api_key=ANTHROPIC_KEY)
 
+# Shared mutable state between execute() and handle_tool()
+_state: dict = {"report_phase_done": False, "result_summary": "No result"}
+
 # ── Telegram ──────────────────────────────────────────────────
 def tg(msg: str, parse_mode: str = "Markdown") -> bool:
     """Send progress update to Telegram. Never raises — fire and forget."""
@@ -189,9 +192,8 @@ def handle_tool(name: str, inp: dict) -> str:
         tg(f"{icon} *{phase}*\n{msg}\n\n[View run]({RUN_URL})")
         print(f"  📱 [{phase}] {msg[:100]}")
         if phase == "REPORT":
-            nonlocal report_phase_done, result_summary
-            report_phase_done = True
-            result_summary = msg
+            _state["report_phase_done"] = True
+            _state["result_summary"] = msg
         return "Progress sent"
 
     return f"Unknown tool: {name}"
@@ -252,10 +254,10 @@ CRITICAL RULES:
 
     messages = [{"role": "user", "content": f"Execute this task completely: {TASK}"}]
     has_changes = False
-    result_summary = "No result"
     iterations = 0
     MAX_ITER = 25
-    report_phase_done = False  # True when REPORT fired — exit after this iteration
+    _state["report_phase_done"] = False
+    _state["result_summary"] = "No result"
 
     while iterations < MAX_ITER:
         iterations += 1
@@ -277,8 +279,8 @@ CRITICAL RULES:
             # Extract final text
             for block in response.content:
                 if hasattr(block, "text"):
-                    result_summary = block.text
-                    print(f"\n✅ Agent completed:\n{result_summary[:500]}")
+                    _state["result_summary"] = block.text
+                    print(f"\n✅ Agent completed:\n{_state['result_summary'][:500]}")
             break
 
         if response.stop_reason != "tool_use":
@@ -309,7 +311,7 @@ CRITICAL RULES:
         messages.append({"role": "user", "content": tool_results})
 
         # Exit cleanly after REPORT phase fires — task is done
-        if report_phase_done:
+        if _state["report_phase_done"]:
             print("\n✅ REPORT phase complete — exiting loop")
             break
 
@@ -331,8 +333,8 @@ CRITICAL RULES:
 
     # Write GitHub outputs
     with open(GITHUB_OUTPUT, "a") as f:
-        safe_summary = result_summary.replace("\n", "\\n").replace('"', '\\"')[:2000]
-        f.write(f"result<<EOF\n{result_summary[:3000]}\nEOF\n")
+        safe_summary = _state["result_summary"].replace("\n", "\\n").replace('"', '\\"')[:2000]
+        f.write(f"result<<EOF\n{_state["result_summary"][:3000]}\nEOF\n")
         f.write(f"has_changes={'true' if has_changes else 'false'}\n")
         f.write(f"iterations={iterations}\n")
 
@@ -343,7 +345,7 @@ CRITICAL RULES:
         f"📋 Task: `{TASK[:150]}`\n"
         f"🔄 Iterations: {iterations}\n"
         f"💾 Changes: {'Yes — committed & pushed' if has_changes else 'None'}\n\n"
-        f"*Summary:*\n{result_summary[:800]}\n\n"
+        f"*Summary:*\n{_state["result_summary"][:800]}\n\n"
         f"[View run]({RUN_URL})"
     )
 
