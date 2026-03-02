@@ -39,6 +39,27 @@ user_task_counts = {}  # {user_id: [(timestamp, task), ...]}
 task_queue = []
 task_history = []
 
+# ── Execution mode: "cloud" | "local" | "auto" ────────────────
+EXEC_MODE = os.getenv("EXEC_MODE", "cloud")  # default cloud — works when desktop sleeps
+
+def detect_claude_code_running() -> bool:
+    """Return True if Claude Code process is active on the local machine."""
+    try:
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            name = proc.info.get("name", "") or ""
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            if "claude" in name.lower() or "claude-code" in cmdline.lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+def get_effective_mode() -> str:
+    """Return 'cloud' or 'local' based on current mode setting."""
+    if EXEC_MODE == "auto":
+        return "local" if detect_claude_code_running() else "cloud"
+    return EXEC_MODE  # explicit override
+
 class AuthenticationError(Exception):
     """User not authorized"""
     pass
@@ -153,20 +174,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await update.message.reply_text(
-        "🤖 AgentRemote v4.0\n\n"
-        "I can execute development tasks for you!\n\n"
-        "📊 Features:\n"
-        "• Smart Router (90% FREE tier)\n"
-        "• Task queue management\n"
-        "• Rate limiting protection\n"
-        "• User authentication\n\n"
-        "Commands:\n"
-        "/task <description> - Execute a task\n"
-        "/status - Check system status\n"
-        "/queue - View task queue\n"
-        "/history - View task history\n"
-        "/stats - View usage statistics\n\n"
-        f"Rate limit: {RATE_LIMIT_TASKS_PER_HOUR} tasks/hour"
+        "🤖 *AgentRemote v4\\.0*\n\n"
+        "Autonomous task execution via GitHub Actions\\.\n\n"
+        "📋 *Task Commands*\n"
+        "/task `<description>` — Execute a task\n"
+        "/status — System status\n"
+        "/queue — Active queue\n"
+        "/history — Past tasks\n\n"
+        "⚡ *Execution Mode*\n"
+        "/mode — Show current mode\n"
+        "/cloud — Force GitHub Actions \\(works offline\\)\n"
+        "/local — Force local Claude Code\n"
+        "/auto — Auto\\-detect\n\n"
+        "📊 *QA Commands*\n"
+        "/qa — Latest QA scores\n"
+        "/qa\\_trigger — Run pipeline now\n"
+        "/qa\\_issues — Open critical issues",
+        parse_mode="MarkdownV2"
     )
 
 async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,32 +222,55 @@ async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Send confirmation
+    # Show mode + send confirmation
+    mode = get_effective_mode()
+    mode_label = "☁️ Cloud (GitHub Actions)" if mode == "cloud" else "🖥️ Local (Claude Code)"
     await update.message.reply_text(
-        f"🚀 Task Queued\n\n"
-        f"Task: {task_desc}\n"
-        f"Smart Router: 90% FREE tier enabled\n\n"
-        f"⏳ Executing..."
+        f"🚀 *Task Queued*\n\n"
+        f"📋 `{task_desc[:200]}`\n"
+        f"⚡ Mode: {mode_label}\n\n"
+        f"⏳ Executing\\.\\.\\.",
+        parse_mode="MarkdownV2"
     )
-    
-    # Execute task
-    result = execute_cloud_task(task_desc, chat_id, str(update.message.message_id))
+
+    if mode == "cloud":
+        result = execute_cloud_task(task_desc, chat_id, str(update.message.message_id))
+    else:
+        # Local mode: write task file for Claude Code to pick up
+        try:
+            task_file = os.path.expanduser(f"~/claude_tasks/{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
+            os.makedirs(os.path.dirname(task_file), exist_ok=True)
+            with open(task_file, "w") as f:
+                f.write(f"# Task\n{task_desc}\n")
+            result = {"success": True, "message": f"Task file written: {task_file}"}
+        except Exception as e:
+            result = {"success": False, "error": str(e)}
     
     # Record for rate limiting
     record_task(str(user_id), task_desc)
     
     if result["success"]:
-        await update.message.reply_text(
-            f"✅ Task queued successfully!\n\n"
-            f"☁️ Cloud execution triggered via GitHub Actions.\n"
-            f"🎯 Smart Router: Using 90% FREE tier (Gemini 2.5 Flash)\n"
-            f"📱 You'll receive a notification when complete."
-        )
+        mode = get_effective_mode()
+        if mode == "cloud":
+            await update.message.reply_text(
+                f"✅ *Cloud execution triggered*\n\n"
+                f"GitHub Actions is now running your task\\.\n"
+                f"📱 You'll get a Telegram notification when complete\\.\n\n"
+                f"[Monitor run](https://github.com/{GITHUB_REPO}/actions)",
+                parse_mode="MarkdownV2"
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ *Task queued for local execution*\n\n"
+                f"Claude Code will pick it up momentarily\\.",
+                parse_mode="MarkdownV2"
+            )
     else:
         await update.message.reply_text(
-            f"❌ Failed to trigger cloud execution.\n\n"
-            f"Error: {result.get('error', 'Unknown error')}\n\n"
-            f"Check GitHub token and repository settings."
+            f"❌ *Execution failed*\n\n"
+            f"`{result.get('error', 'Unknown error')}`\n\n"
+            f"Check GH\\_TOKEN and repo settings\\.",
+            parse_mode="MarkdownV2"
         )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -460,6 +507,61 @@ async def cmd_qa_trigger(update, context):
         await update.message.reply_text("❌ Trigger failed. Check GH_TOKEN permissions.")
 
 
+async def cmd_cloud(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch to cloud execution mode."""
+    global EXEC_MODE
+    EXEC_MODE = "cloud"
+    await update.message.reply_text(
+        "☁️ *Cloud mode activated*\n\n"
+        "Tasks will run via GitHub Actions\\.\n"
+        "Works even when your desktop is offline\\.",
+        parse_mode="MarkdownV2"
+    )
+
+async def cmd_local(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch to local execution mode."""
+    global EXEC_MODE
+    EXEC_MODE = "local"
+    await update.message.reply_text(
+        "🖥️ *Local mode activated*\n\n"
+        "Tasks will be written for Claude Code to pick up\\.\n"
+        "Requires desktop to be online and Claude Code running\\.",
+        parse_mode="MarkdownV2"
+    )
+
+async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch to auto-detect mode."""
+    global EXEC_MODE
+    EXEC_MODE = "auto"
+    current = get_effective_mode()
+    cc_running = detect_claude_code_running()
+    await update.message.reply_text(
+        f"🔄 *Auto mode activated*\n\n"
+        f"Claude Code running: `{'Yes' if cc_running else 'No'}`\n"
+        f"Current effective mode: `{current}`\n\n"
+        f"Will switch automatically based on Claude Code status\\.",
+        parse_mode="MarkdownV2"
+    )
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current execution mode and system status."""
+    mode = get_effective_mode()
+    cc_running = detect_claude_code_running()
+    mode_icon = "☁️" if mode == "cloud" else "🖥️"
+    await update.message.reply_text(
+        f"⚡ *Execution Mode*\n\n"
+        f"Setting: `{EXEC_MODE}`\n"
+        f"Effective: {mode_icon} `{mode}`\n"
+        f"Claude Code: `{'running' if cc_running else 'offline'}`\n\n"
+        f"Commands:\n"
+        f"/cloud — force cloud \\(GitHub Actions\\)\n"
+        f"/local — force local \\(Claude Code\\)\n"
+        f"/auto  — auto\\-detect based on Claude Code status\n\n"
+        f"[Actions](https://github.com/{GITHUB_REPO}/actions)",
+        parse_mode="MarkdownV2"
+    )
+
+
 def main():
     """Main function"""
     if not TELEGRAM_BOT_TOKEN:
@@ -471,7 +573,7 @@ def main():
         sys.exit(1)
     
     logger.info("🚀 AgentRemote v4.0 starting...")
-    logger.info(f"🎯 Smart Router: {SMART_ROUTER_URL}")
+    logger.info(f"⚡ Default mode: {EXEC_MODE}")
     logger.info(f"🔒 Authentication: {'Enabled' if AUTHORIZED_USERS != [''] else 'Disabled'}")
     logger.info(f"⚡ Rate Limit: {RATE_LIMIT_TASKS_PER_HOUR} tasks/hour")
     
@@ -485,6 +587,12 @@ def main():
     app.add_handler(CommandHandler("queue", queue_command))
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    # Execution mode
+    app.add_handler(CommandHandler("cloud", cmd_cloud))
+    app.add_handler(CommandHandler("local", cmd_local))
+    app.add_handler(CommandHandler("auto", cmd_auto))
+    app.add_handler(CommandHandler("mode", cmd_mode))
+    # QA commands
     app.add_handler(CommandHandler("qa", cmd_qa))
     app.add_handler(CommandHandler("qa_last", cmd_qa_last))
     app.add_handler(CommandHandler("qa_trigger", cmd_qa_trigger))
