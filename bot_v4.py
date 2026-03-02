@@ -335,6 +335,113 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  vs Without Router: $0.003"
     )
 
+
+
+# ──────────────────────────────────────────────────────────────
+# QA PIPELINE COMMANDS
+# ──────────────────────────────────────────────────────────────
+
+def get_sb():
+    import os
+    url = os.environ.get("SUPABASE_URL","https://mocerqjnksmhcjzxrewo.supabase.co")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY","")
+    return url, key
+
+def score_bar(score: float) -> str:
+    filled = int(score * 10)
+    return "[" + "█"*filled + "░"*(10-filled) + f"] {score*100:.0f}%"
+
+def score_emoji(score: float) -> str:
+    return "🟢" if score >= 0.95 else ("🟡" if score >= 0.80 else "🔴")
+
+async def cmd_qa(update, context):
+    import json as _json, urllib.request as _req, os
+    await update.message.reply_text("🔍 Fetching QA status...")
+    url, key = get_sb()
+    try:
+        r = _req.Request(
+            f"{url}/rest/v1/insights?type=eq.qa_sentinel&order=timestamp.desc&limit=1",
+            headers={"apikey":key,"Authorization":f"Bearer {key}"}
+        )
+        with _req.urlopen(r) as resp:
+            rows = _json.loads(resp.read().decode())
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Supabase error: {e}")
+        return
+    if not rows:
+        await update.message.reply_text("⏳ *No QA runs yet.*\nFirst run at 11PM EST tonight.", parse_mode="Markdown")
+        return
+    row = rows[0]
+    details = _json.loads(row["details"]) if isinstance(row["details"],str) else row["details"]
+    scores = details.get("scores",{})
+    status = row["status"].upper()
+    overall = row.get("score",0.0)
+    ts = row["timestamp"][:16].replace("T"," ")
+    lines = [
+        f"📊 *QA Pipeline — {'✅ PASS' if status=='PASS' else '❌ FAIL'}*",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"Run: `{ts} UTC` | Score: `{overall*100:.0f}%`",
+        f"",
+        f"*BidDeed.AI*",
+        f"  {score_emoji(scores.get('biddeed_unit',0))} Unit: `{scores.get('biddeed_unit',0)*100:.0f}%`",
+        f"  {score_emoji(scores.get('biddeed_evals',0))} DeepEval: `{scores.get('biddeed_evals',0)*100:.0f}%`",
+        f"",
+        f"*ZoneWise.AI*",
+        f"  {score_emoji(scores.get('zonewise_agent',0))} Agents: `{scores.get('zonewise_agent',0)*100:.0f}%`",
+        f"  {score_emoji(scores.get('zonewise_e2e_pass_rate',0))} E2E: `{scores.get('zonewise_e2e_pass_rate',0)*100:.0f}%`",
+    ]
+    failures = details.get("failures",[])
+    if failures:
+        lines += ["","*Failures:*"]
+        for fail in failures:
+            lines.append(f"  ❌ `{fail['layer']}` → {fail['score']*100:.0f}%")
+    lines += ["","[🔗 GitHub Actions](https://github.com/breverdbidder/qa-agentic-pipeline/actions)"]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
+
+async def cmd_qa_last(update, context):
+    import json as _json, urllib.request as _req
+    url, key = get_sb()
+    try:
+        r = _req.Request(
+            f"{url}/rest/v1/insights?type=eq.qa_sentinel&order=timestamp.desc&limit=5&select=timestamp,status,score",
+            headers={"apikey":key,"Authorization":f"Bearer {key}"}
+        )
+        with _req.urlopen(r) as resp:
+            rows = _json.loads(resp.read().decode())
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ {e}"); return
+    if not rows:
+        await update.message.reply_text("No runs yet."); return
+    lines = ["📈 *Last QA Runs*","━━━━━━━━━━━━━━━━━━━━"]
+    for row in rows:
+        ts = row["timestamp"][:16].replace("T"," ")
+        icon = "✅" if row["status"]=="pass" else "❌"
+        lines.append(f"{icon} `{ts}` — `{row.get('score',0)*100:.0f}%`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def cmd_qa_trigger(update, context):
+    import urllib.request as _req, json as _json
+    await update.message.reply_text("🚀 Triggering QA pipeline...")
+    payload = _json.dumps({"ref":"main"}).encode()
+    r = _req.Request(
+        "https://api.github.com/repos/breverdbidder/qa-agentic-pipeline/actions/workflows/nightly-qa.yml/dispatches",
+        data=payload,
+        headers={"Authorization":f"Bearer {GH_TOKEN}","Accept":"application/vnd.github.v3+json","Content-Type":"application/json"},
+        method="POST"
+    )
+    try:
+        with _req.urlopen(r) as resp:
+            ok = resp.status in [200,204]
+    except: ok = False
+    if ok:
+        await update.message.reply_text(
+            "✅ *QA triggered.* Report in ~15 min.\n[Monitor](https://github.com/breverdbidder/qa-agentic-pipeline/actions)",
+            parse_mode="Markdown", disable_web_page_preview=True
+        )
+    else:
+        await update.message.reply_text("❌ Trigger failed. Check GH_TOKEN permissions.")
+
+
 def main():
     """Main function"""
     if not TELEGRAM_BOT_TOKEN:
@@ -360,6 +467,9 @@ def main():
     app.add_handler(CommandHandler("queue", queue_command))
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("qa", cmd_qa))
+    app.add_handler(CommandHandler("qa_last", cmd_qa_last))
+    app.add_handler(CommandHandler("qa_trigger", cmd_qa_trigger))
     
     logger.info("✅ AgentRemote v4.0 is running!")
     logger.info("💬 Send /start in Telegram to begin")
