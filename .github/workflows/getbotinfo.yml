@@ -1,0 +1,19 @@
+name: GetBotInfo
+on:
+  workflow_dispatch:
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: getMe
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getMe" | python3 -c "
+import json,sys
+r=json.load(sys.stdin)['result']
+print('NAME:', r['first_name'])
+print('USERNAME: @' + r['username'])
+print('ID:', r['id'])
+"
