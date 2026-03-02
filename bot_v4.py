@@ -419,6 +419,24 @@ async def cmd_qa_last(update, context):
         lines.append(f"{icon} `{ts}` — `{row.get('score',0)*100:.0f}%`")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+async def cmd_qa_issues(update, context):
+    import urllib.request as _req, json as _json
+    try:
+        r = _req.Request(
+            "https://api.github.com/repos/breverdbidder/qa-agentic-pipeline/issues?labels=qa-critical&state=open",
+            headers={"Authorization": f"Bearer {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        )
+        with _req.urlopen(r) as resp:
+            issues = _json.loads(resp.read().decode())
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ {e}"); return
+    if not issues:
+        await update.message.reply_text("✅ *No open QA critical issues.*", parse_mode="Markdown"); return
+    lines = [f"🚨 *{len(issues)} Open QA Issue(s)*", "━━━━━━━━━━━━━━━━━━━━"]
+    for issue in issues[:5]:
+        lines.append(f"• [{issue['title'][:55]}]({issue['html_url']})")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=False)
+
 async def cmd_qa_trigger(update, context):
     import urllib.request as _req, json as _json
     await update.message.reply_text("🚀 Triggering QA pipeline...")
@@ -470,6 +488,7 @@ def main():
     app.add_handler(CommandHandler("qa", cmd_qa))
     app.add_handler(CommandHandler("qa_last", cmd_qa_last))
     app.add_handler(CommandHandler("qa_trigger", cmd_qa_trigger))
+    app.add_handler(CommandHandler("qa_issues", cmd_qa_issues))
     
     logger.info("✅ AgentRemote v4.0 is running!")
     logger.info("💬 Send /start in Telegram to begin")
