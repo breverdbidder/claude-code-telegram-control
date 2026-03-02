@@ -334,7 +334,7 @@ CRITICAL RULES:
     # Write GitHub outputs
     with open(GITHUB_OUTPUT, "a") as f:
         safe_summary = _state["result_summary"].replace("\n", "\\n").replace('"', '\\"')[:2000]
-        f.write(f"result<<EOF\n{_state["result_summary"][:3000]}\nEOF\n")
+        f.write("result<<EOF\n" + _state["result_summary"][:3000] + "\nEOF\n")
         f.write(f"has_changes={'true' if has_changes else 'false'}\n")
         f.write(f"iterations={iterations}\n")
 
@@ -345,7 +345,7 @@ CRITICAL RULES:
         f"📋 Task: `{TASK[:150]}`\n"
         f"🔄 Iterations: {iterations}\n"
         f"💾 Changes: {'Yes — committed & pushed' if has_changes else 'None'}\n\n"
-        f"*Summary:*\n{_state["result_summary"][:800]}\n\n"
+        "*Summary:*\n" + _state["result_summary"][:800] + "\n\n",
         f"[View run]({RUN_URL})"
     )
 
