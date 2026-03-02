@@ -188,6 +188,10 @@ def handle_tool(name: str, inp: dict) -> str:
         icon = phase_icons.get(phase, "▶️")
         tg(f"{icon} *{phase}*\n{msg}\n\n[View run]({RUN_URL})")
         print(f"  📱 [{phase}] {msg[:100]}")
+        if phase == "REPORT":
+            nonlocal report_phase_done, result_summary
+            report_phase_done = True
+            result_summary = msg
         return "Progress sent"
 
     return f"Unknown tool: {name}"
@@ -227,22 +231,23 @@ REPOSITORY FILES:
 {file_list}
 
 EXECUTION PROTOCOL:
-1. Call report_progress(phase=ANALYZE) first with your analysis
+1. Call report_progress(phase=ANALYZE) with your analysis of the task
 2. Call report_progress(phase=PLAN) with step-by-step plan
-3. Use bash/write_file/read_file to implement
-4. Call report_progress(phase=IMPLEMENT) after each major step
-5. Run tests/verification with bash
-6. Call greptile_audit if code quality check needed
-7. Call report_progress(phase=VERIFY) with test results
-8. Git commit and push changes
-9. Call report_progress(phase=REPORT) with final summary
+3. Use bash/write_file/read_file to implement — read before writing
+4. Call report_progress(phase=IMPLEMENT) after major changes
+5. Run tests/verification with bash if needed
+6. Call report_progress(phase=VERIFY) with test results
+7. Call report_progress(phase=REPORT) with final summary — THIS ENDS EXECUTION
 
-RULES:
+DO NOT run git commands — the workflow commits and pushes automatically after you finish.
+DO NOT call any tools after report_progress(phase=REPORT).
+
+CRITICAL RULES:
+- DO NOT run git add/commit/push inside bash tools — the workflow handles git automatically after you finish
+- Stop after calling report_progress(phase=REPORT) — do not verify or loop after REPORT
 - Make real changes — read existing files before modifying
-- Run git diff before committing
-- Never echo placeholder code — write actual working implementation
-- If a step fails, diagnose and retry (up to 3 times)
-- Send progress updates so the user knows what's happening
+- If a step fails, diagnose and retry (max 2 retries per step, then move on)
+- Send progress updates so the user knows what's happening at each phase
 """
 
     messages = [{"role": "user", "content": f"Execute this task completely: {TASK}"}]
@@ -250,6 +255,7 @@ RULES:
     result_summary = "No result"
     iterations = 0
     MAX_ITER = 25
+    report_phase_done = False  # True when REPORT fired — exit after this iteration
 
     while iterations < MAX_ITER:
         iterations += 1
@@ -301,6 +307,11 @@ RULES:
             })
 
         messages.append({"role": "user", "content": tool_results})
+
+        # Exit cleanly after REPORT phase fires — task is done
+        if report_phase_done:
+            print("\n✅ REPORT phase complete — exiting loop")
+            break
 
     # Git commit if changes made
     rc, diff, _ = run("git diff --stat HEAD")
