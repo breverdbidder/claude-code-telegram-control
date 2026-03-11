@@ -27,14 +27,31 @@ jobs:
           ctx = ssl.create_default_context()
           results = []
 
-          def check(name, url, headers=None, method="GET"):
+          def check(name, url, headers=None, method="GET", post_data=None):
               try:
-                  req = urllib.request.Request(url, headers=headers or {}, method=method)
+                  req = urllib.request.Request(url, headers=headers or {}, method=method, data=post_data)
+                  resp = urllib.request.urlopen(req, timeout=10, context=ctx)
+                  body = resp.read().decode()[:200]
+                  results.append(("OK", name, f"HTTP {resp.status}"))
+              except urllib.error.HTTPError as e:
+                  # 302/301 redirects are OK for websites
+                  results.append(("FAIL", name, f"HTTP {e.code}"))
+              except Exception as e:
+                  results.append(("FAIL", name, str(e)[:80]))
+
+          def check_site(name, url):
+              """Websites returning 200/301/302/403 are all 'up'"""
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                   resp = urllib.request.urlopen(req, timeout=10, context=ctx)
                   results.append(("OK", name, f"HTTP {resp.status}"))
+              except urllib.error.HTTPError as e:
+                  if e.code in (301, 302, 403):
+                      results.append(("OK", name, f"HTTP {e.code} (up)"))
+                  else:
+                      results.append(("FAIL", name, f"HTTP {e.code}"))
               except Exception as e:
-                  code = getattr(getattr(e, 'response', None), 'status', str(e)[:60])
-                  results.append(("FAIL", name, f"{code}"))
+                  results.append(("FAIL", name, str(e)[:80]))
 
           # 1. GitHub PAT
           check("GitHub PAT", "https://api.github.com/user",
@@ -53,6 +70,13 @@ jobs:
                       headers={"x-api-key": ak, "anthropic-version": "2023-06-01", "content-type": "application/json"})
                   resp = urllib.request.urlopen(req, timeout=15, context=ctx)
                   results.append(("OK", "Anthropic API", "Credits OK"))
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:200]
+                  try:
+                      msg = json.loads(body).get("error",{}).get("message","")[:60]
+                  except:
+                      msg = f"HTTP {e.code}"
+                  results.append(("FAIL", "Anthropic API", msg))
               except Exception as e:
                   results.append(("FAIL", "Anthropic API", str(e)[:80]))
           else:
@@ -67,10 +91,10 @@ jobs:
           else:
               results.append(("WARN", "Supabase", "URL not set"))
 
-          # 5. Apify
+          # 5. Apify - fixed endpoint
           ap = os.environ.get("APIFY_TOKEN", "")
           if ap:
-              check("Apify/SimilarWeb", f"https://api.apify.com/v2/user/me?token={ap}")
+              check("Apify", f"https://api.apify.com/v2/acts?token={ap}&limit=1")
           else:
               results.append(("WARN", "Apify", "Not set"))
 
@@ -82,12 +106,12 @@ jobs:
           else:
               results.append(("WARN", "Render", "Not set"))
 
-          # 7. External sites
-          for site in ["realiste.ai", "titleman.ai", "realforeclose.com"]:
-              check(site, f"https://{site}")
+          # 7. External sites - with User-Agent and redirect tolerance
+          for site in ["realiste.ai", "titleman.ai", "brevard.realforeclose.com"]:
+              check_site(site, f"https://{site}")
 
           # Build report
-          icons = {"OK": "✅", "FAIL": "❌", "WARN": "⚠️"}
+          icons = {"OK": "\u2705", "FAIL": "\u274c", "WARN": "\u26a0\ufe0f"}
           lines = [f"{icons[s]} {n}: {d}" for s, n, d in results]
           p = sum(1 for s,_,_ in results if s == "OK")
           f = sum(1 for s,_,_ in results if s == "FAIL")
@@ -95,13 +119,13 @@ jobs:
           t = p + f + w
 
           if f > 0:
-              header = "🚨 ACTION REQUIRED"
+              header = "\U0001f6a8 ACTION REQUIRED"
           elif w > 0:
-              header = "⚠️ WARNINGS"
+              header = "\u26a0\ufe0f WARNINGS"
           else:
-              header = "✅ ALL CLEAR"
+              header = "\u2705 ALL CLEAR"
 
-          msg = f"{header}\n🏥 Health Check\n{p}/{t} pass | {f} fail | {w} warn\n\n" + "\n".join(lines)
+          msg = f"{header}\n\U0001f3e5 Health Check\n{p}/{t} pass | {f} fail | {w} warn\n\n" + "\n".join(lines)
           print(msg)
 
           # Send to Telegram
@@ -111,9 +135,9 @@ jobs:
                   data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode()
                   req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
                   urllib.request.urlopen(req, timeout=10, context=ctx)
-                  print("\nTelegram notification sent!")
+                  print("\nTelegram sent!")
               except Exception as e:
-                  print(f"\nTelegram send failed: {e}")
+                  print(f"\nTelegram failed: {e}")
 
           exit(1 if f > 0 else 0)
           SCRIPT
