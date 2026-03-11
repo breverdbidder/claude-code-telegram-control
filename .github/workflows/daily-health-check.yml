@@ -1,0 +1,196 @@
+name: "Daily Infrastructure Health Check"
+on:
+  schedule:
+    - cron: "0 11 * * *"  # 7 AM EST daily
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+
+    steps:
+      - name: "Run All Health Checks"
+        run: |
+          PASS=0
+          FAIL=0
+          WARN=0
+          REPORT=""
+
+          check() {
+            local NAME="$1"
+            local STATUS="$2"
+            local DETAIL="$3"
+            if [ "$STATUS" = "OK" ]; then
+              REPORT="${REPORT}✅ ${NAME}: ${DETAIL}
+"
+              PASS=$((PASS+1))
+            elif [ "$STATUS" = "WARN" ]; then
+              REPORT="${REPORT}⚠️ ${NAME}: ${DETAIL}
+"
+              WARN=$((WARN+1))
+            else
+              REPORT="${REPORT}❌ ${NAME}: ${DETAIL}
+"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          # 1. GitHub PAT
+          GH_RESP=$(curl -s -w "%{http_code}" -o /tmp/gh.json -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/user")
+          if [ "$GH_RESP" = "200" ]; then
+            GH_USER=$(cat /tmp/gh.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
+            check "GitHub PAT" "OK" "${GH_USER} (200)"
+          else
+            check "GitHub PAT" "FAIL" "HTTP ${GH_RESP} — TOKEN EXPIRED"
+          fi
+
+          # 2. GitHub Actions (can we dispatch?)
+          DISPATCH_TEST=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/breverdbidder/claude-code-telegram-control/actions/workflows" 2>/dev/null)
+          if [ "$DISPATCH_TEST" = "200" ]; then
+            check "GitHub Actions" "OK" "Workflow access confirmed"
+          else
+            check "GitHub Actions" "FAIL" "HTTP ${DISPATCH_TEST}"
+          fi
+
+          # 3. Telegram Bot
+          BOT_RESP=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | python3 -c "
+          import sys,json
+          d=json.load(sys.stdin)
+          if d.get('ok'): print('OK|@'+d['result']['username'])
+          else: print('FAIL|'+str(d))
+          " 2>/dev/null)
+          BOT_STATUS=$(echo "$BOT_RESP" | cut -d'|' -f1)
+          BOT_DETAIL=$(echo "$BOT_RESP" | cut -d'|' -f2)
+          check "Telegram Bot" "$BOT_STATUS" "$BOT_DETAIL"
+
+          # 4. Telegram Chat ID
+          if [ -n "$TELEGRAM_CHAT_ID" ] && [ "$TELEGRAM_CHAT_ID" != "" ]; then
+            PING=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" -d text="." | python3 -c "
+            import sys,json; d=json.load(sys.stdin); print('OK' if d.get('ok') else 'FAIL')" 2>/dev/null)
+            if [ "$PING" = "OK" ]; then
+              check "Telegram Chat ID" "OK" "Can deliver messages"
+            else
+              check "Telegram Chat ID" "FAIL" "Cannot send to ${TELEGRAM_CHAT_ID}"
+            fi
+          else
+            check "Telegram Chat ID" "FAIL" "NOT SET in secrets"
+          fi
+
+          # 5. Anthropic API Credits
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            API_RESP=$(curl -s -w "%{http_code}" -o /tmp/anth.json -X POST \
+              "https://api.anthropic.com/v1/messages" \
+              -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+              -H "anthropic-version: 2023-06-01" \
+              -H "content-type: application/json" \
+              -d '{"model":"claude-sonnet-4-20250514","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
+            if [ "$API_RESP" = "200" ]; then
+              check "Anthropic API" "OK" "Credits available"
+            else
+              ERR=$(cat /tmp/anth.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('message','unknown')[:80])" 2>/dev/null)
+              check "Anthropic API" "FAIL" "${ERR}"
+            fi
+          else
+            check "Anthropic API" "WARN" "Key not set — cloud executor won't work"
+          fi
+
+          # 6. Supabase
+          if [ -n "$SUPABASE_URL" ]; then
+            SB_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
+              "${SUPABASE_URL}/rest/v1/" \
+              -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+              -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
+            if [ "$SB_RESP" = "200" ]; then
+              check "Supabase" "OK" "Connected"
+            else
+              check "Supabase" "FAIL" "HTTP ${SB_RESP}"
+            fi
+          else
+            check "Supabase" "WARN" "URL not set"
+          fi
+
+          # 7. Apify (SimilarWeb)
+          if [ -n "$APIFY_TOKEN" ]; then
+            AP_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://api.apify.com/v2/user/me?token=${APIFY_TOKEN}")
+            if [ "$AP_RESP" = "200" ]; then
+              check "Apify/SimilarWeb" "OK" "Token valid"
+            else
+              check "Apify/SimilarWeb" "FAIL" "HTTP ${AP_RESP}"
+            fi
+          else
+            check "Apify/SimilarWeb" "WARN" "Token not set"
+          fi
+
+          # 8. Render
+          if [ -n "$RENDER_API_KEY" ]; then
+            RN_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" \
+              "https://api.render.com/v1/owners")
+            if [ "$RN_RESP" = "200" ]; then
+              check "Render" "OK" "Connected"
+            else
+              check "Render" "FAIL" "HTTP ${RN_RESP}"
+            fi
+          else
+            check "Render" "WARN" "Key not set"
+          fi
+
+          # 9. External services reachable
+          for SVC in "realiste.ai" "titleman.ai" "cloud.realiste.ai" "realforeclose.com"; do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${SVC}" 2>/dev/null)
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "301" ] || [ "$HTTP" = "302" ]; then
+              check "${SVC}" "OK" "HTTP ${HTTP}"
+            else
+              check "${SVC}" "FAIL" "HTTP ${HTTP}"
+            fi
+          done
+
+          # Build final message
+          TOTAL=$((PASS+FAIL+WARN))
+          HEADER="🏥 Daily Health Check ($(date -u +%Y-%m-%d))"
+          SUMMARY="${PASS}/${TOTAL} pass | ${FAIL} fail | ${WARN} warn"
+
+          if [ "$FAIL" -gt 0 ]; then
+            EMOJI="🚨"
+            URGENCY="ACTION REQUIRED"
+          elif [ "$WARN" -gt 0 ]; then
+            EMOJI="⚠️"
+            URGENCY="WARNINGS"
+          else
+            EMOJI="✅"
+            URGENCY="ALL SYSTEMS GO"
+          fi
+
+          MSG="${EMOJI} ${HEADER}
+${URGENCY}: ${SUMMARY}
+
+${REPORT}"
+
+          # Send to Telegram
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            --data-urlencode "text=$(echo -e "$MSG")"
+
+          # Fail the workflow if any critical checks failed
+          if [ "$FAIL" -gt 0 ]; then
+            echo -e "
+$MSG"
+            exit 1
+          fi
+          echo -e "
+$MSG"
