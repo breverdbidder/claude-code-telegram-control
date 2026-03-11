@@ -7,13 +7,18 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - uses: actions/checkout@v4
+      - name: "Notify Start"
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="🔬 Realiste RE Mission STARTED - crawling 13 pages, 6 REST endpoints, 3 GraphQL endpoints, JS bundles..."
       - name: "Phase 1-4: Crawl + API + GraphQL + JS"
         run: |
           mkdir -p competitive-intelligence/realiste/pages competitive-intelligence/realiste/api competitive-intelligence/realiste/js
-          
-          # Phase 1: Crawl pages
           for URL in \
             "https://realiste.ai/en/" \
             "https://realiste.ai/en/for-agents" \
@@ -33,15 +38,11 @@ jobs:
             sleep 1
           done
           echo "Crawled $(ls competitive-intelligence/realiste/pages/ | wc -l) pages"
-          
-          # Phase 2: REST API
           for EP in floor_plans_public layers_dev_public user_registration_public projects_public cities_public search_public; do
             curl -sL "https://realiste.ai/api?format=json&json_action=$EP" -H "Accept: application/json" \
               -o "competitive-intelligence/realiste/api/${EP}.json"
             sleep 1
           done
-          
-          # Phase 3: GraphQL
           for GQL in "https://realiste.ai/graphql" "https://realiste.ai/api/graphql" "https://titleman.ai/graphql"; do
             GNAME=$(echo "$GQL" | sed 's|https://||;s|/|_|g').json
             curl -sL -X POST "$GQL" -H "Content-Type: application/json" \
@@ -49,64 +50,58 @@ jobs:
               -o "competitive-intelligence/realiste/api/graphql_${GNAME}"
             sleep 1
           done
-          
-          # Phase 4: JS bundle
           curl -sL "https://realiste.ai/en/" | grep -oP '/_nuxt/[^"]+\.js' | head -5 | while read JS; do
             JNAME=$(basename "$JS")
             curl -sL "https://realiste.ai${JS}" -o "competitive-intelligence/realiste/js/${JNAME}"
           done
-          
-          # Extract API patterns from JS
           for F in competitive-intelligence/realiste/js/*.js; do
             grep -oiP '(api[Uu]rl|base[Uu][Rr][Ll]|graphql[Uu]rl|api[Kk]ey|endpoint)[^,;]*' "$F" 2>/dev/null
           done > competitive-intelligence/realiste/js/api_patterns.txt
-          
-          # Headers recon
           curl -sI https://realiste.ai > competitive-intelligence/realiste/api/headers_realiste.txt
           curl -sI https://titleman.ai > competitive-intelligence/realiste/api/headers_titleman.txt
           curl -sI https://cloud.realiste.ai > competitive-intelligence/realiste/api/headers_cloud.txt
-
-      - name: "Phase 5: Generate Analysis Report"
+      - name: "Phase 5: Generate Report"
         run: |
           cat > competitive-intelligence/realiste/REALISTE_RE_REPORT.md << 'REPORT'
           # Realiste AI Reverse Engineering Report
-          ## Auto-generated $(date -u)
-          
-          ### Pages Crawled
+          ## Auto-generated
           REPORT
+          echo "### Pages Crawled" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           ls competitive-intelligence/realiste/pages/ >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-          
           echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           echo "### API Responses" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           for F in competitive-intelligence/realiste/api/*.json; do
             echo "#### $(basename $F)" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-            echo '```json' >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-            head -c 3000 "$F" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+            head -c 2000 "$F" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
             echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-            echo '```' >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           done
-          
-          echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           echo "### JS API Patterns" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           cat competitive-intelligence/realiste/js/api_patterns.txt >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-          
-          echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           echo "### Headers" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
           cat competitive-intelligence/realiste/api/headers_*.txt >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
-
-      - name: "Phase 6: Push to biddeed-ai repo"
+      - name: "Phase 6: Push to biddeed-ai"
         run: |
           cd competitive-intelligence/realiste
           tar czf /tmp/realiste_re.tar.gz .
           cd /home/runner/work
-          
           git clone https://x-access-token:${GH_TOKEN}@github.com/breverdbidder/biddeed-ai.git target
           cd target
           mkdir -p competitive-intelligence/realiste
           tar xzf /tmp/realiste_re.tar.gz -C competitive-intelligence/realiste/
-          
           git config user.name "AgentRemote"
           git config user.email "agent@biddeed.ai"
           git add -A
           git commit -m "feat(ci): Realiste AI reverse engineering - $(date -u +%Y%m%d)" || echo "No changes"
           git push origin main
+      - name: "Notify Complete"
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            MSG="✅ Realiste RE Mission COMPLETE. Results pushed to breverdbidder/biddeed-ai/competitive-intelligence/realiste/"
+          else
+            MSG="❌ Realiste RE Mission FAILED at step. Check: https://github.com/breverdbidder/claude-code-telegram-control/actions"
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="${MSG}"
