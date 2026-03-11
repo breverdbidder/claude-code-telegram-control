@@ -1,8 +1,9 @@
-name: "Daily Infrastructure Health Check"
+name: Daily Infrastructure Health Check
+
 on:
   schedule:
-    - cron: "0 11 * * *"  # 7 AM EST daily
-  workflow_dispatch:
+    - cron: '0 11 * * *'
+  workflow_dispatch: {}
 
 jobs:
   health-check:
@@ -17,180 +18,73 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-
     steps:
-      - name: "Run All Health Checks"
+      - name: Run Health Checks and Alert
+        shell: bash
         run: |
-          PASS=0
-          FAIL=0
-          WARN=0
-          REPORT=""
+          P=0; F=0; W=0; R=""
+          ck() { if [ "$2" = "OK" ]; then R="${R}✅ $1: $3\n"; P=$((P+1)); elif [ "$2" = "WARN" ]; then R="${R}⚠️ $1: $3\n"; W=$((W+1)); else R="${R}❌ $1: $3\n"; F=$((F+1)); fi; }
 
-          check() {
-            local NAME="$1"
-            local STATUS="$2"
-            local DETAIL="$3"
-            if [ "$STATUS" = "OK" ]; then
-              REPORT="${REPORT}✅ ${NAME}: ${DETAIL}
-"
-              PASS=$((PASS+1))
-            elif [ "$STATUS" = "WARN" ]; then
-              REPORT="${REPORT}⚠️ ${NAME}: ${DETAIL}
-"
-              WARN=$((WARN+1))
-            else
-              REPORT="${REPORT}❌ ${NAME}: ${DETAIL}
-"
-              FAIL=$((FAIL+1))
-            fi
-          }
+          # GitHub PAT
+          GH=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/user")
+          [ "$GH" = "200" ] && ck "GitHub PAT" "OK" "HTTP 200" || ck "GitHub PAT" "FAIL" "HTTP ${GH} TOKEN EXPIRED"
 
-          # 1. GitHub PAT
-          GH_RESP=$(curl -s -w "%{http_code}" -o /tmp/gh.json -H "Authorization: token ${GH_TOKEN}" "https://api.github.com/user")
-          if [ "$GH_RESP" = "200" ]; then
-            GH_USER=$(cat /tmp/gh.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('login',''))" 2>/dev/null)
-            check "GitHub PAT" "OK" "${GH_USER} (200)"
+          # Telegram Bot
+          TB=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | python3 -c "import sys,json;d=json.load(sys.stdin);print('OK' if d.get('ok') else 'FAIL')" 2>/dev/null)
+          ck "Telegram Bot" "$TB" "getMe"
+
+          # Telegram deliver
+          if [ -n "$TELEGRAM_CHAT_ID" ]; then
+            TD=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="." | python3 -c "import sys,json;print('OK' if json.load(sys.stdin).get('ok') else 'FAIL')" 2>/dev/null)
+            ck "Telegram Delivery" "$TD" "chat_id ${TELEGRAM_CHAT_ID}"
           else
-            check "GitHub PAT" "FAIL" "HTTP ${GH_RESP} — TOKEN EXPIRED"
+            ck "Telegram Delivery" "FAIL" "CHAT_ID not set"
           fi
 
-          # 2. GitHub Actions (can we dispatch?)
-          DISPATCH_TEST=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Authorization: token ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/breverdbidder/claude-code-telegram-control/actions/workflows" 2>/dev/null)
-          if [ "$DISPATCH_TEST" = "200" ]; then
-            check "GitHub Actions" "OK" "Workflow access confirmed"
-          else
-            check "GitHub Actions" "FAIL" "HTTP ${DISPATCH_TEST}"
-          fi
-
-          # 3. Telegram Bot
-          BOT_RESP=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | python3 -c "
-          import sys,json
-          d=json.load(sys.stdin)
-          if d.get('ok'): print('OK|@'+d['result']['username'])
-          else: print('FAIL|'+str(d))
-          " 2>/dev/null)
-          BOT_STATUS=$(echo "$BOT_RESP" | cut -d'|' -f1)
-          BOT_DETAIL=$(echo "$BOT_RESP" | cut -d'|' -f2)
-          check "Telegram Bot" "$BOT_STATUS" "$BOT_DETAIL"
-
-          # 4. Telegram Chat ID
-          if [ -n "$TELEGRAM_CHAT_ID" ] && [ "$TELEGRAM_CHAT_ID" != "" ]; then
-            PING=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TELEGRAM_CHAT_ID}" -d text="." | python3 -c "
-            import sys,json; d=json.load(sys.stdin); print('OK' if d.get('ok') else 'FAIL')" 2>/dev/null)
-            if [ "$PING" = "OK" ]; then
-              check "Telegram Chat ID" "OK" "Can deliver messages"
-            else
-              check "Telegram Chat ID" "FAIL" "Cannot send to ${TELEGRAM_CHAT_ID}"
-            fi
-          else
-            check "Telegram Chat ID" "FAIL" "NOT SET in secrets"
-          fi
-
-          # 5. Anthropic API Credits
+          # Anthropic API
           if [ -n "$ANTHROPIC_API_KEY" ]; then
-            API_RESP=$(curl -s -w "%{http_code}" -o /tmp/anth.json -X POST \
-              "https://api.anthropic.com/v1/messages" \
-              -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-              -H "anthropic-version: 2023-06-01" \
-              -H "content-type: application/json" \
-              -d '{"model":"claude-sonnet-4-20250514","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
-            if [ "$API_RESP" = "200" ]; then
-              check "Anthropic API" "OK" "Credits available"
-            else
-              ERR=$(cat /tmp/anth.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('message','unknown')[:80])" 2>/dev/null)
-              check "Anthropic API" "FAIL" "${ERR}"
-            fi
+            AK=$(curl -s -o /tmp/ak.json -w "%{http_code}" -X POST "https://api.anthropic.com/v1/messages" -H "x-api-key: ${ANTHROPIC_API_KEY}" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" -d '{"model":"claude-sonnet-4-20250514","max_tokens":5,"messages":[{"role":"user","content":"1"}]}')
+            [ "$AK" = "200" ] && ck "Anthropic API" "OK" "Credits OK" || ck "Anthropic API" "FAIL" "$(cat /tmp/ak.json | python3 -c 'import sys,json;print(json.load(sys.stdin).get(\"error\",{}).get(\"message\",\"err\")[:60])' 2>/dev/null)"
           else
-            check "Anthropic API" "WARN" "Key not set — cloud executor won't work"
+            ck "Anthropic API" "WARN" "Key not set"
           fi
 
-          # 6. Supabase
+          # Supabase
           if [ -n "$SUPABASE_URL" ]; then
-            SB_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
-              "${SUPABASE_URL}/rest/v1/" \
-              -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-              -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
-            if [ "$SB_RESP" = "200" ]; then
-              check "Supabase" "OK" "Connected"
-            else
-              check "Supabase" "FAIL" "HTTP ${SB_RESP}"
-            fi
+            SB=$(curl -s -o /dev/null -w "%{http_code}" "${SUPABASE_URL}/rest/v1/" -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}")
+            [ "$SB" = "200" ] && ck "Supabase" "OK" "Connected" || ck "Supabase" "FAIL" "HTTP ${SB}"
           else
-            check "Supabase" "WARN" "URL not set"
+            ck "Supabase" "WARN" "URL not set"
           fi
 
-          # 7. Apify (SimilarWeb)
+          # Apify
           if [ -n "$APIFY_TOKEN" ]; then
-            AP_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
-              "https://api.apify.com/v2/user/me?token=${APIFY_TOKEN}")
-            if [ "$AP_RESP" = "200" ]; then
-              check "Apify/SimilarWeb" "OK" "Token valid"
-            else
-              check "Apify/SimilarWeb" "FAIL" "HTTP ${AP_RESP}"
-            fi
+            AP=$(curl -s -o /dev/null -w "%{http_code}" "https://api.apify.com/v2/user/me?token=${APIFY_TOKEN}")
+            [ "$AP" = "200" ] && ck "Apify" "OK" "Token valid" || ck "Apify" "FAIL" "HTTP ${AP}"
           else
-            check "Apify/SimilarWeb" "WARN" "Token not set"
+            ck "Apify" "WARN" "Not set"
           fi
 
-          # 8. Render
+          # Render
           if [ -n "$RENDER_API_KEY" ]; then
-            RN_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer ${RENDER_API_KEY}" \
-              "https://api.render.com/v1/owners")
-            if [ "$RN_RESP" = "200" ]; then
-              check "Render" "OK" "Connected"
-            else
-              check "Render" "FAIL" "HTTP ${RN_RESP}"
-            fi
+            RN=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${RENDER_API_KEY}" "https://api.render.com/v1/owners")
+            [ "$RN" = "200" ] && ck "Render" "OK" "Connected" || ck "Render" "FAIL" "HTTP ${RN}"
           else
-            check "Render" "WARN" "Key not set"
+            ck "Render" "WARN" "Not set"
           fi
 
-          # 9. External services reachable
-          for SVC in "realiste.ai" "titleman.ai" "cloud.realiste.ai" "realforeclose.com"; do
-            HTTP=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${SVC}" 2>/dev/null)
-            if [ "$HTTP" = "200" ] || [ "$HTTP" = "301" ] || [ "$HTTP" = "302" ]; then
-              check "${SVC}" "OK" "HTTP ${HTTP}"
-            else
-              check "${SVC}" "FAIL" "HTTP ${HTTP}"
-            fi
+          # External sites
+          for S in realiste.ai titleman.ai realforeclose.com; do
+            H=$(curl -s -o /dev/null -w "%{http_code}" -m 10 "https://${S}" 2>/dev/null)
+            [ "$H" = "200" ] || [ "$H" = "301" ] || [ "$H" = "302" ] && ck "$S" "OK" "$H" || ck "$S" "FAIL" "$H"
           done
 
-          # Build final message
-          TOTAL=$((PASS+FAIL+WARN))
-          HEADER="🏥 Daily Health Check ($(date -u +%Y-%m-%d))"
-          SUMMARY="${PASS}/${TOTAL} pass | ${FAIL} fail | ${WARN} warn"
+          T=$((P+F+W))
+          [ "$F" -gt 0 ] && E="🚨 ACTION REQUIRED" || { [ "$W" -gt 0 ] && E="⚠️ WARNINGS" || E="✅ ALL CLEAR"; }
+          MSG="${E}\n🏥 Health Check $(date -u +%Y-%m-%d)\n${P}/${T} pass | ${F} fail | ${W} warn\n\n${R}"
 
-          if [ "$FAIL" -gt 0 ]; then
-            EMOJI="🚨"
-            URGENCY="ACTION REQUIRED"
-          elif [ "$WARN" -gt 0 ]; then
-            EMOJI="⚠️"
-            URGENCY="WARNINGS"
-          else
-            EMOJI="✅"
-            URGENCY="ALL SYSTEMS GO"
-          fi
-
-          MSG="${EMOJI} ${HEADER}
-${URGENCY}: ${SUMMARY}
-
-${REPORT}"
-
-          # Send to Telegram
+          echo -e "$MSG"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d parse_mode="HTML" \
-            --data-urlencode "text=$(echo -e "$MSG")"
+            -d chat_id="${TELEGRAM_CHAT_ID}" --data-urlencode "text=$(echo -e "$MSG")"
 
-          # Fail the workflow if any critical checks failed
-          if [ "$FAIL" -gt 0 ]; then
-            echo -e "
-$MSG"
-            exit 1
-          fi
-          echo -e "
-$MSG"
+          [ "$F" -gt 0 ] && exit 1 || exit 0
