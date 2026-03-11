@@ -1,0 +1,112 @@
+name: "Realiste RE Mission (No API Credits)"
+on:
+  workflow_dispatch:
+jobs:
+  reverse-engineer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Phase 1-4: Crawl + API + GraphQL + JS"
+        run: |
+          mkdir -p competitive-intelligence/realiste/pages competitive-intelligence/realiste/api competitive-intelligence/realiste/js
+          
+          # Phase 1: Crawl pages
+          for URL in \
+            "https://realiste.ai/en/" \
+            "https://realiste.ai/en/for-agents" \
+            "https://realiste.ai/en/our-story" \
+            "https://realiste.ai/en/about_realiste" \
+            "https://realiste.ai/en/reviews" \
+            "https://realiste.ai/en/cities/uae-dubai" \
+            "https://cloud.realiste.ai/en" \
+            "https://titleman.ai/?locale=en" \
+            "https://titleman.ai/pricing?locale=en" \
+            "https://titleman.ai/security?locale=en" \
+            "https://titleman.ai/sources-and-data?locale=en" \
+            "https://titleman.ai/company?locale=en" \
+            "https://titleman.ai/product/price-estimation-of-any-property?locale=en"; do
+            FNAME=$(echo "$URL" | sed 's|https://||;s|/|_|g;s|?|_|g;s|=|_|g').html
+            curl -sL "$URL" -o "competitive-intelligence/realiste/pages/$FNAME"
+            sleep 1
+          done
+          echo "Crawled $(ls competitive-intelligence/realiste/pages/ | wc -l) pages"
+          
+          # Phase 2: REST API
+          for EP in floor_plans_public layers_dev_public user_registration_public projects_public cities_public search_public; do
+            curl -sL "https://realiste.ai/api?format=json&json_action=$EP" -H "Accept: application/json" \
+              -o "competitive-intelligence/realiste/api/${EP}.json"
+            sleep 1
+          done
+          
+          # Phase 3: GraphQL
+          for GQL in "https://realiste.ai/graphql" "https://realiste.ai/api/graphql" "https://titleman.ai/graphql"; do
+            GNAME=$(echo "$GQL" | sed 's|https://||;s|/|_|g').json
+            curl -sL -X POST "$GQL" -H "Content-Type: application/json" \
+              -d '{"query":"{ __schema { types { name kind } } }"}' \
+              -o "competitive-intelligence/realiste/api/graphql_${GNAME}"
+            sleep 1
+          done
+          
+          # Phase 4: JS bundle
+          curl -sL "https://realiste.ai/en/" | grep -oP '/_nuxt/[^"]+\.js' | head -5 | while read JS; do
+            JNAME=$(basename "$JS")
+            curl -sL "https://realiste.ai${JS}" -o "competitive-intelligence/realiste/js/${JNAME}"
+          done
+          
+          # Extract API patterns from JS
+          for F in competitive-intelligence/realiste/js/*.js; do
+            grep -oiP '(api[Uu]rl|base[Uu][Rr][Ll]|graphql[Uu]rl|api[Kk]ey|endpoint)[^,;]*' "$F" 2>/dev/null
+          done > competitive-intelligence/realiste/js/api_patterns.txt
+          
+          # Headers recon
+          curl -sI https://realiste.ai > competitive-intelligence/realiste/api/headers_realiste.txt
+          curl -sI https://titleman.ai > competitive-intelligence/realiste/api/headers_titleman.txt
+          curl -sI https://cloud.realiste.ai > competitive-intelligence/realiste/api/headers_cloud.txt
+
+      - name: "Phase 5: Generate Analysis Report"
+        run: |
+          cat > competitive-intelligence/realiste/REALISTE_RE_REPORT.md << 'REPORT'
+          # Realiste AI Reverse Engineering Report
+          ## Auto-generated $(date -u)
+          
+          ### Pages Crawled
+          REPORT
+          ls competitive-intelligence/realiste/pages/ >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          
+          echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          echo "### API Responses" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          for F in competitive-intelligence/realiste/api/*.json; do
+            echo "#### $(basename $F)" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+            echo '```json' >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+            head -c 3000 "$F" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+            echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+            echo '```' >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          done
+          
+          echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          echo "### JS API Patterns" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          cat competitive-intelligence/realiste/js/api_patterns.txt >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          
+          echo "" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          echo "### Headers" >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+          cat competitive-intelligence/realiste/api/headers_*.txt >> competitive-intelligence/realiste/REALISTE_RE_REPORT.md
+
+      - name: "Phase 6: Push to biddeed-ai repo"
+        run: |
+          cd competitive-intelligence/realiste
+          tar czf /tmp/realiste_re.tar.gz .
+          cd /home/runner/work
+          
+          git clone https://x-access-token:${GH_TOKEN}@github.com/breverdbidder/biddeed-ai.git target
+          cd target
+          mkdir -p competitive-intelligence/realiste
+          tar xzf /tmp/realiste_re.tar.gz -C competitive-intelligence/realiste/
+          
+          git config user.name "AgentRemote"
+          git config user.email "agent@biddeed.ai"
+          git add -A
+          git commit -m "feat(ci): Realiste AI reverse engineering - $(date -u +%Y%m%d)" || echo "No changes"
+          git push origin main
