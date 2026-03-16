@@ -1,120 +1,45 @@
-# CLAUDE.md - AgentRemote v4.1
+# CLAUDE.md — BidDeed.AI / Everest Capital USA
 
-## Overview
-AgentRemote is BidDeed.AI's Telegram bot for remote Claude Code control. Dual-mode: LOCAL (Claude Code on desktop) + CLOUD (GitHub Actions serverless).
+## Who I Am
+Ariel Shapira. Solo founder of BidDeed.AI and Everest Capital USA. 10+ years foreclosure investing in Brevard County, Florida. Licensed FL broker and general contractor. Building an AI-powered foreclosure auction intelligence platform. ADHD — I need systems that run themselves.
 
-## MCP Server: AgentRemote Telegram Tools
+## My Stack
+- **Repos:** github.com/breverdbidder/* (cli-anything-biddeed, zonewise-scraper-v4, biddeed-ai, biddeed-ai-ui, zonewise-web, cliproxy-gateway, tax-insurance-optimizer)
+- **Database:** Supabase (mocerqjnksmhcjzxrewo.supabase.co) — multi_county_auctions (245K rows), activities, insights, daily_metrics
+- **Compute:** Hetzner everest-dispatch (87.99.129.125) with CLIProxyAPI on 127.0.0.1:8317
+- **AI:** Gemini Flash (FREE via CLIProxyAPI), DeepSeek V3.2 ($0.28/1M), Claude (Max plan, never API)
+- **Deploy:** GitHub Actions + Cloudflare Pages + Render
+- **Brand:** Navy #1E3A5F, Orange #F59E0B, Inter font, bg #020617
 
-When this MCP server is active, you have 4 Telegram tools. **USE THEM** during autonomous sessions.
+## Context Rules
 
-### Required Behavior During Autonomous Sessions
+When I mention an auction or property → query Supabase `multi_county_auctions` first
+When I mention a case number → search `multi_county_auctions` by case_number field
+When analyzing a deal → apply max bid formula: (ARV×70%)-Repairs-$10K-MIN($25K,15%×ARV)
+When I ask about pipeline health → check `daily_metrics` and recent GitHub Action runs
+When I mention a county → check if config exists in `counties/` before assuming anything
+When something needs building → follow cli-anything HARNESS.md 7-phase pattern
+When deploying code → push to GitHub, never local installs or Google Drive
+When spending money → stop and confirm if >$10/session
+When I context-switch mid-task → flag it: "📌 [previous task] is still open"
+When I say "Summit" → execute immediately, no questions, no clarification
 
-1. **Session Start**: Call `telegram_notify` with level="info" to announce session start
-2. **Every 30 minutes**: Call `telegram_send` with progress summary
-3. **Decisions needed**: Call `telegram_ask` with options instead of blocking
-4. **Files completed**: Call `telegram_send_file` for deliverables
-5. **Session End**: Call `telegram_notify` with level="success" summarizing work done
-6. **Errors**: Call `telegram_notify` with level="error" immediately, don't wait
+## How I Work
+- Direct, no softening language. Facts and actions.
+- Cost discipline: $10/session max. Batch operations. One attempt per approach.
+- Zero HITL: try 3 alternatives before surfacing a blocker.
+- Execute first, report results. Don't ask what to do.
+- Push back with strong opinions when you disagree.
+- Wrong = "I was wrong." Never invent numbers.
 
-### Tool Reference
+## Slash Commands
+- `/auction-brief` — morning auction briefing from Supabase
+- `/county-setup` — onboard a new Florida county
+- `/deal-intel` — process foreclosure documents into structured data
+- `/tldr` — end-of-session summary, updates memory.md
+- `/transcript` — YouTube video analysis via Hetzner pipeline
 
-```
-telegram_send(message)           → Send progress update (Markdown OK)
-telegram_ask(question, options)  → Ask user with buttons, returns selection
-telegram_notify(title, body, level) → Styled alert: success/error/warning/info
-telegram_send_file(file_path, caption) → Send a file to Telegram
-```
-
-### Example Autonomous Session Flow
-
-```
-[Session starts]
-→ telegram_notify("🚀 Session Started", "Working on: Fix BECA scraper timeout\nEst: 2 hours", "info")
-
-[30 min checkpoint]
-→ telegram_send("📊 *Progress:* Identified 3 timeout sources in beca_scraper.py. Fixing connection pooling now.")
-
-[Decision point]
-→ telegram_ask("Connection pool size?", ["10 connections", "25 connections", "50 connections"])
-→ User taps "25 connections" → continues
-
-[File ready]
-→ telegram_send_file("/path/to/report.pdf", "Audit report for BECA scraper fixes")
-
-[Session complete]
-→ telegram_notify("✅ Session Complete", "Fixed 3 timeout issues\nTests: 14/14 passing\nDeployed to main", "success")
-```
-
-### Shabbat Rules
-- Do NOT send notifications between Friday sunset and Saturday night (havdalah)
-- Queue non-urgent messages for after Shabbat
-- Emergency errors (data loss, security): send immediately regardless
-
-## Webhook Notifications
-
-The `webhook_notify.yml` workflow sends Telegram alerts for:
-- Issues: opened, closed, labeled
-- PRs: opened, merged, review requested
-- CI: workflow pass/fail
-- Pushes: to main branch
-
-These are automatic. No Claude Code action needed.
-
-## File Structure
-```
-├── bot_v3.py                          # Original dual-mode bot
-├── bot_v4.py                          # Enhanced: auth, rate limiting, smart router
-├── mcp_server.py                      # MCP server (4 Telegram tools)
-├── setup_mcp.sh                       # Bootstrap: syncs mcp_server.py to local
-├── .github/workflows/
-│   ├── agent-executor.yml             # Cloud execution workflow
-│   └── webhook_notify.yml             # GitHub event → Telegram notifications
-├── .github/scripts/
-│   ├── cloud_executor.py              # Claude API task executor
-│   └── send_notification.py           # Telegram notification sender
-└── .claude/settings.local.json        # Claude Code config (MCP + permissions)
-```
-
-## Zero Human-in-the-Loop Rules
-- All Bash, Read, Write, WebFetch pre-approved
-- MCP server handles Telegram communication
-- Use `telegram_ask` instead of blocking for decisions
-- Auto-approve all file operations
-- Commit frequently, push to branches
-
-
-## Debugging with DAP
-
-**ALWAYS use `dap` instead of print-statement debugging.** The `dap` CLI wraps the Debug Adapter Protocol for surgical debugging.
-
-### Setup (auto-install if missing)
-```bash
-which dap || curl -fsSL https://raw.githubusercontent.com/AlmogBaku/debug-skill/master/install.sh | bash
-```
-
-### When to use
-- Program crashes or raises unexpected exceptions
-- Wrong output and root cause isn't obvious from stack trace
-- Data flows through multiple functions/files (pipeline bugs)
-- Print-debugging would require 3+ iterations
-
-### Quick reference
-```bash
-dap debug script.py --break script.py:42     # breakpoint at line 42
-dap debug script.py --break-on-exception raised  # catch all exceptions
-dap eval "len(items)"                         # inspect live state
-dap step                                      # step over
-dap step in                                   # step into function
-dap step out                                  # return to caller
-dap continue                                  # next breakpoint
-dap stop                                      # end session
-```
-
-### Debugging mindset
-1. Form hypothesis: "I believe the bug is in X because Y"
-2. Set breakpoint upstream of where error manifests
-3. Inspect locals and call stack at each stop
-4. Confirm or refute hypothesis, adjust breakpoint
-5. Fix only after understanding root cause
-
-Full skill docs: `skills/debugging-code/SKILL.md`
+## Family Context (when relevant)
+- Wife Mariam: runs Property360 real estate, Protection Partners insurance, contracting
+- Son Michael (16): D1 competitive swimmer, Satellite Beach HS, keto diet, Shabbat observance
+- Orthodox practices: Shabbat (no work Fri sunset–Sat havdalah), kosher, holidays
