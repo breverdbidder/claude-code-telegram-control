@@ -111,68 +111,105 @@ def supabase_update(table: str, id_val: str, data: dict) -> bool:
         return False
 
 
-# ── Claude Code CLI Executor ──────────────────────────────────
+# ── Multi-Provider LLM Executor ───────────────────────────────
+# Priority: 1) Claude CLI Max plan ($0) 2) Gemini Flash (FREE) 3) DeepSeek
 def execute_claude_task(task: str, timeout: int = MAX_TASK_DURATION) -> dict:
-    """
-    Execute a task using Claude Code CLI (Max plan, $0).
-    Returns {success, output, duration_ms, error}
-    """
+    """Execute task using best available LLM with automatic fallback."""
     start = time.time()
+
+    # ── Try 1: Claude CLI (Max plan, $0) ──
     try:
-        # Use claude --print for single-shot execution
-        # --output-format text for clean output
-        # --max-turns 25 for bounded execution
-        result = subprocess.run(
-            [
-                CLAUDE_CMD,
-                "--print",
-                "--output-format", "text",
-                "--max-turns", "25",
-                "--verbose",
-                task,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=os.path.expanduser("~"),
+        check = subprocess.run(
+            [CLAUDE_CMD, "auth", "status"],
+            capture_output=True, text=True, timeout=5,
         )
-
-        duration_ms = int((time.time() - start) * 1000)
-        output = result.stdout.strip()
-        error = result.stderr.strip() if result.returncode != 0 else ""
-
-        return {
-            "success": result.returncode == 0,
-            "output": output[:50000],  # Cap at 50K chars
-            "error": error[:5000],
-            "duration_ms": duration_ms,
-            "exit_code": result.returncode,
-        }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "output": "",
-            "error": f"Task timed out after {timeout}s",
-            "duration_ms": int((time.time() - start) * 1000),
-            "exit_code": -1,
-        }
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "output": "",
-            "error": "Claude CLI not found. Is it installed and on PATH?",
-            "duration_ms": 0,
-            "exit_code": -1,
-        }
+        if '"loggedIn": true' in check.stdout:
+            result = subprocess.run(
+                [CLAUDE_CMD, "--print", "--output-format", "text", "--max-turns", "25", task],
+                capture_output=True, text=True, timeout=timeout,
+                cwd=os.path.expanduser("~"),
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return {
+                    "success": True,
+                    "output": result.stdout.strip()[:50000],
+                    "error": "",
+                    "duration_ms": int((time.time() - start) * 1000),
+                    "exit_code": 0,
+                    "model": "claude-cli-max",
+                }
+            print(f"[LLM] Claude CLI returned {result.returncode}: {result.stderr[:200]}")
+        else:
+            print("[LLM] Claude CLI not logged in, falling back to Gemini")
     except Exception as e:
-        return {
-            "success": False,
-            "output": "",
-            "error": str(e),
-            "duration_ms": int((time.time() - start) * 1000),
-            "exit_code": -1,
-        }
+        print(f"[LLM] Claude CLI error: {e}")
+
+    # ── Try 2: Gemini Flash (FREE) ──
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if gemini_key:
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                json={
+                    "contents": [{"parts": [{"text": task}]}],
+                    "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.7},
+                },
+                timeout=min(timeout, 120),
+            )
+            if r.status_code == 200:
+                data = r.json()
+                text = ""
+                for candidate in data.get("candidates", []):
+                    for part in candidate.get("content", {}).get("parts", []):
+                        text += part.get("text", "")
+                if text:
+                    return {
+                        "success": True,
+                        "output": text[:50000],
+                        "error": "",
+                        "duration_ms": int((time.time() - start) * 1000),
+                        "exit_code": 0,
+                        "model": "gemini-2.0-flash",
+                    }
+            print(f"[LLM] Gemini failed: {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            print(f"[LLM] Gemini error: {e}")
+
+    # ── Try 3: DeepSeek (cheap fallback) ──
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+    if deepseek_key:
+        try:
+            r = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {deepseek_key}"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": task}],
+                    "max_tokens": 4096,
+                },
+                timeout=min(timeout, 120),
+            )
+            if r.status_code == 200:
+                text = r.json()["choices"][0]["message"]["content"]
+                return {
+                    "success": True,
+                    "output": text[:50000],
+                    "error": "",
+                    "duration_ms": int((time.time() - start) * 1000),
+                    "exit_code": 0,
+                    "model": "deepseek-v3",
+                }
+            print(f"[LLM] DeepSeek failed: {r.status_code}")
+        except Exception as e:
+            print(f"[LLM] DeepSeek error: {e}")
+
+    return {
+        "success": False,
+        "output": "",
+        "error": "All LLM providers failed. Claude CLI not logged in, Gemini/DeepSeek unavailable.",
+        "duration_ms": int((time.time() - start) * 1000),
+        "exit_code": -1,
+    }
 
 
 # ── Task Processing (async in background thread) ─────────────
@@ -216,11 +253,12 @@ def process_task(payload: dict):
 
     # Send result to Telegram
     if result["success"] and result["output"]:
+        model_tag = result.get("model", "unknown")
         emoji = "✅"
         reply = result["output"]
         if len(reply) > 3500:
             reply = reply[:3500] + "\n\n... (truncated, full result in Supabase)"
-        tg_send(bot_token, chat_id, f"{emoji} Done ({result['duration_ms']}ms)\n\n{reply}", parse_mode="")
+        tg_send(bot_token, chat_id, f"{emoji} Done ({result['duration_ms']}ms | {model_tag})\n\n{reply}", parse_mode="")
     else:
         error_msg = result["error"] or "Unknown error"
         tg_send(bot_token, chat_id, f"❌ Failed ({result['duration_ms']}ms)\n\n{error_msg}", parse_mode="")
