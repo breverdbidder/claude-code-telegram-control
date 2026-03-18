@@ -1,0 +1,12 @@
+name = "agentremote-dispatch"
+main = "index.js"
+compatibility_date = "2024-09-25"
+account_id = "" # Set via `wrangler whoami` or env var
+
+[vars]
+HETZNER_URL = "http://87.99.129.125:8318"
+
+# Secrets (set via `wrangler secret put`):
+# TELEGRAM_BOT_TOKEN = "8470705931:AAE..."
+# AGENT_SECRET = "your-shared-secret"
+# ALLOWED_CHAT_ID = "your-telegram-chat-id"
