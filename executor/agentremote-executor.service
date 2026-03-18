@@ -1,0 +1,24 @@
+[Unit]
+Description=AgentRemote V5 Executor
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/agentremote-executor
+ExecStart=/usr/bin/python3 /opt/agentremote-executor/executor.py
+Restart=always
+RestartSec=5
+Environment=EXECUTOR_PORT=8318
+Environment=CLAUDE_CMD=claude
+Environment=MAX_TASK_DURATION=300
+Environment=SUPABASE_URL=https://mocerqjnksmhcjzxrewo.supabase.co
+EnvironmentFile=/opt/agentremote-executor/.env
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target
