@@ -27,6 +27,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "https://mocerqjnksmhcjzxrewo.supabase.
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 MAX_TASK_DURATION = int(os.getenv("MAX_TASK_DURATION", "300"))  # 5 min default
 CLAUDE_CMD = os.getenv("CLAUDE_CMD", "claude")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")  # Only this chat_id can use the bot
 
 # Task queue (simple in-memory, Supabase is the durable store)
 task_queue = asyncio.Queue() if False else []  # Using list for threading
@@ -340,14 +342,156 @@ class AgentHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
 
+# ── Telegram Bot: Long-Polling ────────────────────────────────
+
+QUICK_COMMANDS = {
+    "/start": "🤖 *AgentRemote V5.0* — Unified Phone Agent\n\nSend any message or use commands:\n/brief — Morning briefing\n/status — System health\n/repos — GitHub repo status\n/swim — Michael's latest times\n/expenses — Expense breakdown\n/history — Recent task log\n/help — This message",
+    "/help": "Commands:\n/brief — Morning briefing (Gmail + Calendar)\n/status — Hetzner + services health\n/repos — All 5 GitHub repos status\n/swim — SwimCloud data for Michael\n/expenses — Scan expense folder\n/history — Last 10 tasks\n\nOr just type naturally:\n\"Check my email for anything urgent\"\n\"What auctions are coming up?\"",
+    "/ping": "🏓 Pong! AgentRemote V5 running on Hetzner.",
+}
+
+SKILL_TASKS = {
+    "/brief": "Run the morning brief: 1) Check Gmail for urgent/unread emails from the last 24 hours. 2) Check Google Calendar for today's events. 3) Check GitHub notifications for all breverdbidder repos. 4) Summarize everything as a prioritized brief with top 3 priorities numbered.",
+    "/repos": "Check health of all 5 breverdbidder GitHub repos: claude-code-telegram-control, cli-anything-biddeed, zonewise-scraper-v4, swimsquad-ai, biddeed-ai. Report last commit date, open issues, and workflow status for each. Flag stale repos (>7 days).",
+    "/swim": "Query SwimCloud ID 3250085 for Michael Shapira's latest swim times. Current SCY PBs: 50Fr 21.74, 100Fr 48.48, 200Fr 1:50.47, 100Fly 55.19. Show gap to 2026 Futures cuts (Jul 29-Aug 1). 50 Free is PRIMARY event.",
+    "/expenses": "List and categorize all PDF receipts in the expenses folder. Show total spend by category with percentages and top 5 largest expenses.",
+}
+
+
+def telegram_get_updates(offset: int = 0, timeout: int = 30) -> list:
+    """Long-poll Telegram for new messages."""
+    if not TELEGRAM_BOT_TOKEN:
+        return []
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+            params={"offset": offset, "timeout": timeout, "allowed_updates": '["message"]'},
+            timeout=timeout + 10,
+        )
+        data = r.json()
+        return data.get("result", []) if data.get("ok") else []
+    except Exception as e:
+        print(f"[TG-POLL] Error: {e}")
+        time.sleep(5)
+        return []
+
+
+def telegram_polling_loop():
+    """Background thread: polls Telegram, routes messages to executor."""
+    print("[TG-POLL] Starting Telegram long-polling loop...")
+
+    # Delete any existing webhook first
+    try:
+        requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook",
+            params={"drop_pending_updates": "false"},
+            timeout=10,
+        )
+        print("[TG-POLL] Webhook cleared, polling mode active")
+    except Exception as e:
+        print(f"[TG-POLL] Webhook clear failed: {e}")
+
+    offset = 0
+    while True:
+        try:
+            updates = telegram_get_updates(offset=offset)
+            for update in updates:
+                offset = update["update_id"] + 1
+                msg = update.get("message", {})
+                text = msg.get("text", "").strip()
+                chat = msg.get("chat", {})
+                chat_id = str(chat.get("id", ""))
+
+                if not text or not chat_id:
+                    continue
+
+                # Auth check
+                if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, "⛔ Unauthorized. This bot is private.")
+                    continue
+
+                # Auto-capture chat_id on first /start
+                user_name = msg.get("from", {}).get("first_name", "Unknown")
+                print(f"[TG-POLL] [{chat_id}] {user_name}: {text[:80]}")
+
+                # Quick commands (no Claude needed)
+                cmd = text.split()[0].lower() if text.startswith("/") else ""
+                if cmd in QUICK_COMMANDS:
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, QUICK_COMMANDS[cmd])
+                    continue
+
+                # /status → return local status (no Claude)
+                if cmd == "/status":
+                    status_msg = (
+                        f"📊 *AgentRemote V5 Status*\n\n"
+                        f"State: {'🔄 Busy' if current_task else '✅ Idle'}\n"
+                        f"Uptime: {int(time.time() - start_time)}s\n"
+                        f"Tasks completed: {len(task_history)}\n"
+                        f"Claude CLI: {CLAUDE_CMD}"
+                    )
+                    if current_task:
+                        status_msg += f"\nCurrent: {current_task.get('task', '')[:80]}"
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, status_msg)
+                    continue
+
+                # /history → return recent tasks (no Claude)
+                if cmd == "/history":
+                    if not task_history:
+                        tg_send(TELEGRAM_BOT_TOKEN, chat_id, "📋 No tasks executed yet.")
+                        continue
+                    lines = []
+                    for i, t in enumerate(task_history[-10:], 1):
+                        emoji = "✅" if t["success"] else "❌"
+                        lines.append(f"{i}. {emoji} {t['task'][:60]} ({t['duration_ms']}ms)")
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, "📋 Recent tasks:\n\n" + "\n".join(lines), parse_mode="")
+                    continue
+
+                # Skill commands → Claude CLI
+                if cmd in SKILL_TASKS:
+                    task_text = SKILL_TASKS[cmd]
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, f"⏳ Running {cmd}...")
+                else:
+                    # Natural language → Claude CLI
+                    task_text = text
+                    tg_send(TELEGRAM_BOT_TOKEN, chat_id, "⏳ Processing...")
+
+                # Fire task in background
+                payload = {
+                    "task": task_text,
+                    "chat_id": chat_id,
+                    "bot_token": TELEGRAM_BOT_TOKEN,
+                    "source": "telegram",
+                    "command": cmd or "natural",
+                }
+                Thread(target=process_task, args=(payload,), daemon=True).start()
+
+        except Exception as e:
+            print(f"[TG-POLL] Loop error: {e}")
+            traceback.print_exc()
+            time.sleep(5)
+
+
 # ── Main ──────────────────────────────────────────────────────
 def main():
+    # Start Telegram polling in background thread
+    if TELEGRAM_BOT_TOKEN:
+        tg_thread = Thread(target=telegram_polling_loop, daemon=True)
+        tg_thread.start()
+        print(f"📱 Telegram bot active: polling for @AgentRemote_bot")
+        if ALLOWED_CHAT_ID:
+            print(f"   Auth: only chat_id {ALLOWED_CHAT_ID}")
+        else:
+            print(f"   Auth: OPEN (set ALLOWED_CHAT_ID to restrict)")
+    else:
+        print("📱 Telegram: DISABLED (no TELEGRAM_BOT_TOKEN)")
+
+    # Start HTTP server
     server = HTTPServer(("0.0.0.0", PORT), AgentHandler)
     print(f"🤖 AgentRemote V5 Executor running on port {PORT}")
     print(f"   Claude CLI: {CLAUDE_CMD}")
     print(f"   Max task duration: {MAX_TASK_DURATION}s")
     print(f"   Supabase: {'configured' if SUPABASE_KEY else 'NOT configured'}")
-    print(f"   Auth: {'enabled' if AGENT_SECRET else 'OPEN (dev mode)'}")
+    print(f"   HTTP Auth: {'enabled' if AGENT_SECRET else 'OPEN (dev mode)'}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
