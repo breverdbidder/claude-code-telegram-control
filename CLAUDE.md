@@ -1,45 +1,45 @@
-# CLAUDE.md — BidDeed.AI / Everest Capital USA
+# AgentRemote V5.0 — Unified Phone-to-Cloud Agent
 
-## Who I Am
-Ariel Shapira. Solo founder of BidDeed.AI and Everest Capital USA. 10+ years foreclosure investing in Brevard County, Florida. Licensed FL broker and general contractor. Building an AI-powered foreclosure auction intelligence platform. ADHD — I need systems that run themselves.
+## Architecture
+Phone (Telegram/Co-work/PWA) → Cloudflare Worker → Hetzner Executor → Claude CLI (Max plan, $0)
 
-## My Stack
-- **Repos:** github.com/breverdbidder/* (cli-anything-biddeed, zonewise-scraper-v4, biddeed-ai, biddeed-ai-ui, zonewise-web, cliproxy-gateway, tax-insurance-optimizer)
-- **Database:** Supabase (mocerqjnksmhcjzxrewo.supabase.co) — multi_county_auctions (245K rows), activities, insights, daily_metrics
-- **Compute:** Hetzner everest-dispatch (87.99.129.125) with CLIProxyAPI on 127.0.0.1:8317
-- **AI:** Gemini Flash (FREE via CLIProxyAPI), DeepSeek V3.2 ($0.28/1M), Claude (Max plan, never API)
-- **Deploy:** GitHub Actions + Cloudflare Pages + Render
-- **Brand:** Navy #1E3A5F, Orange #F59E0B, Inter font, bg #020617
+## CRITICAL RULES
+1. **ZERO PAID API** — All Claude execution via `claude` CLI on Max plan. NEVER use `anthropic.Client()` or `ANTHROPIC_API_KEY`.
+2. **Hetzner is the execution layer** — GitHub Actions is for CI/CD only, NOT compute.
+3. **Telegram auth** — Only Ariel's chat_id is allowed. Reject all others.
+4. **Supabase is the state store** — All tasks logged to `agent_tasks` table.
+5. **Cost: $0 incremental** — All infrastructure already paid for.
 
-## Context Rules
+## Components
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Cloudflare Worker | `worker/index.js` | Telegram webhook → route to Hetzner |
+| Hetzner Executor | `executor/executor.py` | HTTP server + Claude CLI bridge |
+| Supabase Migration | `migrations/001_agent_tasks.sql` | Unified task tracking |
+| Co-work Skills | `skills/` | Desktop skills for Claude Co-work |
+| GHA Deploy | `.github/workflows/deploy-executor.yml` | Auto-deploy executor |
 
-When I mention an auction or property → query Supabase `multi_county_auctions` first
-When I mention a case number → search `multi_county_auctions` by case_number field
-When analyzing a deal → apply max bid formula: (ARV×70%)-Repairs-$10K-MIN($25K,15%×ARV)
-When I ask about pipeline health → check `daily_metrics` and recent GitHub Action runs
-When I mention a county → check if config exists in `counties/` before assuming anything
-When something needs building → follow cli-anything HARNESS.md 7-phase pattern
-When deploying code → push to GitHub, never local installs or Google Drive
-When spending money → stop and confirm if >$10/session
-When I context-switch mid-task → flag it: "📌 [previous task] is still open"
-When I say "Summit" → execute immediately, no questions, no clarification
+## Endpoints (Hetzner :8318)
+- `POST /task` — Execute natural language task via Claude CLI
+- `POST /brief` — Morning briefing (Gmail + Calendar + GitHub)
+- `GET /status` — Current task + queue depth
+- `GET /health` — Container health
+- `GET /history?n=10` — Recent task history
 
-## How I Work
-- Direct, no softening language. Facts and actions.
-- Cost discipline: $10/session max. Batch operations. One attempt per approach.
-- Zero HITL: try 3 alternatives before surfacing a blocker.
-- Execute first, report results. Don't ask what to do.
-- Push back with strong opinions when you disagree.
-- Wrong = "I was wrong." Never invent numbers.
+## Telegram Commands
+`/start` `/help` `/ping` — Quick replies (no Hetzner)
+`/brief` `/status` `/repos` `/swim` `/expenses` `/history` — Routed to Hetzner
+Free text — Natural language → `/task` endpoint
 
-## Slash Commands
-- `/auction-brief` — morning auction briefing from Supabase
-- `/county-setup` — onboard a new Florida county
-- `/deal-intel` — process foreclosure documents into structured data
-- `/tldr` — end-of-session summary, updates memory.md
-- `/transcript` — YouTube video analysis via Hetzner pipeline
+## Secrets Required
+| Secret | Where | Purpose |
+|--------|-------|---------|
+| `AGENT_SECRET` | Worker + Hetzner .env | Shared auth key |
+| `SUPABASE_SERVICE_KEY` | Hetzner .env | DB writes |
+| `TELEGRAM_BOT_TOKEN` | Worker + Hetzner .env | Send messages |
+| `TELEGRAM_CHAT_ID` | GHA secrets | Deploy notifications |
+| `HETZNER_SSH_KEY` | GHA secrets | SSH deploy |
+| `ALLOWED_CHAT_ID` | Worker secret | Ariel's Telegram ID |
 
-## Family Context (when relevant)
-- Wife Mariam: runs Property360 real estate, Protection Partners insurance, contracting
-- Son Michael (16): D1 competitive swimmer, Satellite Beach HS, keto diet, Shabbat observance
-- Orthodox practices: Shabbat (no work Fri sunset–Sat havdalah), kosher, holidays
+## Brand
+Navy #1E3A5F | Orange #F59E0B | Font: Inter/Arial
