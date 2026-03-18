@@ -1,0 +1,65 @@
+name: Deploy AgentRemote Executor to Hetzner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'executor/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: 🚀 Deploy Executor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          known_hosts: unnecessary
+          config: |
+            Host hetzner
+              HostName 87.99.129.125
+              User root
+              StrictHostKeyChecking no
+
+      - name: Deploy executor files
+        run: |
+          # Copy executor files
+          scp executor/executor.py hetzner:/opt/agentremote-executor/executor.py
+          scp executor/agentremote-executor.service hetzner:/etc/systemd/system/agentremote-executor.service
+
+          # Restart service
+          ssh hetzner << 'EOF'
+            pip install requests --break-system-packages -q
+            systemctl daemon-reload
+            systemctl enable agentremote-executor
+            systemctl restart agentremote-executor
+            sleep 2
+            systemctl status agentremote-executor --no-pager | head -15
+            echo "---"
+            curl -s http://127.0.0.1:8318/health | python3 -m json.tool
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh hetzner "curl -sf http://127.0.0.1:8318/health" || exit 1
+          echo "✅ Executor healthy on Hetzner"
+
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          STATUS="${{ job.status }}"
+          EMOJI=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="${EMOJI} AgentRemote Executor deploy: ${STATUS}" \
+            -d parse_mode="Markdown"
