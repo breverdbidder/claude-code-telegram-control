@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  agentremote-executor:
+    container_name: agentremote-executor
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8318:8318"
+    environment:
+      - EXECUTOR_PORT=8318
+      - AGENT_SECRET=${AGENT_SECRET}
+      - SUPABASE_URL=https://mocerqjnksmhcjzxrewo.supabase.co
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - CLAUDE_CMD=claude
+      - MAX_TASK_DURATION=300
+    volumes:
+      # Mount Claude Code config from host
+      - ${HOME}/.claude:/root/.claude:ro
+      # Shared workspace for task outputs
+      - agentremote-workspace:/root/workspace
+    networks:
+      - agentremote-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8318/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  agentremote-workspace:
+
+networks:
+  agentremote-net:
+    driver: bridge
