@@ -3,7 +3,7 @@ services:
     name: agentremote-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot_v4.py
+    startCommand: python bot_v5.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
