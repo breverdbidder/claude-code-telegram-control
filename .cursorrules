@@ -1,0 +1,19 @@
+# AgentRemote v5.0 — Cursor Rules
+
+## AUTO-DETECTION
+If the user mentions "Telegram", "remote", "טלגרם", or activates interactive mode,
+switch to Telegram Mode as defined in TELEGRAM_MODE.md.
+
+## LANGUAGE
+- Auto-detect Hebrew vs English from user input
+- Hebrew: use RTL mark (\u200F), respond fully in Hebrew
+- English: standard response
+- Never mix languages unless the user does
+
+## BUTTONS
+Every response in Telegram Mode MUST include inline buttons.
+See TELEGRAM_MODE.md for context-aware button rules.
+
+## LOOP
+Never exit Telegram Mode unless the user explicitly requests it.
+After every task completion, wait for next command.
