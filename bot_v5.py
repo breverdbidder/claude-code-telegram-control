@@ -51,6 +51,20 @@ SMART_ROUTER_KEY = os.getenv(
     "SMART_ROUTER_KEY", "sk-biddeed-litellm-2026-secure"
 )
 
+# ── Gemini Flash — PRIMARY chat LLM (FREE on paid plan) ──────
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+CHAT_SYSTEM_PROMPT = (
+    "You are AgentRemote, a bilingual AI assistant (English + Hebrew). "
+    "You help Ariel Shapira manage his real estate tech ecosystem: BidDeed.AI, ZoneWise.AI, "
+    "and Everest Capital USA. You can also discuss his son Michael's competitive swimming. "
+    "Auto-detect the user's language: if they write in Hebrew, respond fully in Hebrew. "
+    "If English, respond in English. Keep responses concise (Telegram limit). "
+    "For tasks that require code execution, suggest using /task or /interactive commands."
+)
+
 RATE_LIMIT_TASKS_PER_HOUR = int(os.getenv("RATE_LIMIT_TASKS_PER_HOUR", "10"))
 user_task_counts: dict = {}
 
@@ -74,6 +88,42 @@ def detect_lang(text: str) -> str:
     if HEBREW_RANGE.search(text or ""):
         return "he"
     return "en"
+
+def chat_with_gemini(user_message: str, lang: str = "en") -> str:
+    """Call Gemini Flash for conversational responses. FREE on paid plan."""
+    if not GEMINI_API_KEY:
+        return "⚠️ GEMINI_API_KEY not configured. Use /task for execution." if lang == "en" \
+            else "⚠️ מפתח Gemini לא מוגדר. השתמש ב-/task לביצוע."
+    try:
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": f"{CHAT_SYSTEM_PROMPT}\n\nUser: {user_message}"}]}
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 1024,
+                "temperature": 0.7,
+            },
+        }
+        resp = requests.post(
+            f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "…")
+            return "🤖 (empty response)"
+        else:
+            logger.warning(f"Gemini {resp.status_code}: {resp.text[:200]}")
+            return f"⚠️ Gemini error ({resp.status_code}). Use /task for execution."
+    except Exception as e:
+        logger.error(f"Gemini chat error: {e}")
+        return f"⚠️ Chat error: {e}"
+
 
 # ── Bilingual string table ────────────────────────────────────
 STRINGS = {
@@ -449,38 +499,55 @@ async def cmd_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_interactive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle free-text messages during interactive loop."""
+    """Handle free-text messages: interactive loop → task dispatch, otherwise → Gemini chat."""
     chat_id = str(update.effective_chat.id)
-    if not interactive_sessions.get(chat_id):
-        return  # Not in interactive mode — ignore
-
     uid = str(update.effective_user.id)
+
     if not check_authentication(uid):
         return
 
     text = update.message.text or ""
     lang = detect_lang(text)
 
-    if not check_rate_limit(uid):
-        await update.message.reply_text(t("rate_limited", lang))
+    # ── INTERACTIVE MODE: dispatch as task ────────────────────
+    if interactive_sessions.get(chat_id):
+        if not check_rate_limit(uid):
+            await update.message.reply_text(t("rate_limited", lang))
+            return
+
+        await update.message.reply_text(
+            f"*{t('interactive_exec', lang)}*\n`{text[:100]}`",
+            parse_mode="Markdown",
+        )
+
+        await dispatch_task(
+            text, chat_id, str(update.message.message_id),
+            lang, update.message.reply_text, uid,
+        )
+
+        kb = build_interactive_keyboard(lang)
+        rtl = "\u200F" if lang == "he" else ""
+        prompt = f"{rtl}{'מה הלאה?' if lang == 'he' else 'What next?'}"
+        await update.message.reply_text(prompt, reply_markup=kb)
         return
 
-    # Dispatch the free-text as a task
-    await update.message.reply_text(
-        f"*{t('interactive_exec', lang)}*\n`{text[:100]}`",
-        parse_mode="Markdown",
-    )
+    # ── NORMAL MODE: conversational chat via Gemini Flash (FREE) ─
+    response = chat_with_gemini(text, lang)
 
-    await dispatch_task(
-        text, chat_id, str(update.message.message_id),
-        lang, update.message.reply_text, uid,
-    )
+    # Build light keyboard for chat responses
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                t("btn_status", lang), callback_data="action:status"
+            ),
+            InlineKeyboardButton(
+                "📋 /task" if lang == "en" else "📋 משימה",
+                callback_data="action:next_task",
+            ),
+        ]
+    ])
 
-    # Re-show interactive keyboard
-    kb = build_interactive_keyboard(lang)
-    rtl = "\u200F" if lang == "he" else ""
-    prompt = f"{rtl}{'מה הלאה?' if lang == 'he' else 'What next?'}"
-    await update.message.reply_text(prompt, reply_markup=kb)
+    await update.message.reply_text(response, reply_markup=kb)
 
 
 # ── Callback query handler for ALL inline buttons ─────────────
