@@ -90,39 +90,69 @@ def detect_lang(text: str) -> str:
     return "en"
 
 def chat_with_gemini(user_message: str, lang: str = "en") -> str:
-    """Call Gemini Flash for conversational responses. FREE on paid plan."""
-    if not GEMINI_API_KEY:
-        return "⚠️ GEMINI_API_KEY not configured. Use /task for execution." if lang == "en" \
-            else "⚠️ מפתח Gemini לא מוגדר. השתמש ב-/task לביצוע."
-    try:
-        payload = {
-            "contents": [
-                {"role": "user", "parts": [{"text": f"{CHAT_SYSTEM_PROMPT}\n\nUser: {user_message}"}]}
-            ],
-            "generationConfig": {
-                "maxOutputTokens": 1024,
-                "temperature": 0.7,
-            },
-        }
-        resp = requests.post(
-            f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
-            json=payload,
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "…")
-            return "🤖 (empty response)"
-        else:
-            logger.warning(f"Gemini {resp.status_code}: {resp.text[:200]}")
-            return f"⚠️ Gemini error ({resp.status_code}). Use /task for execution."
-    except Exception as e:
-        logger.error(f"Gemini chat error: {e}")
-        return f"⚠️ Chat error: {e}"
+    """Call Gemini Flash, retry on 429, fall back to DeepSeek if Gemini fails."""
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "")
+
+    # ── Try Gemini (FREE tier) with retry on 429 ─────────────
+    if GEMINI_API_KEY:
+        for attempt in range(3):
+            try:
+                payload = {
+                    "contents": [
+                        {"role": "user", "parts": [{"text": f"{CHAT_SYSTEM_PROMPT}\n\nUser: {user_message}"}]}
+                    ],
+                    "generationConfig": {"maxOutputTokens": 1024, "temperature": 0.7},
+                }
+                resp = requests.post(
+                    f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
+                    json=payload, timeout=15,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "…")
+                    return "🤖 (empty response)"
+                elif resp.status_code == 429:
+                    wait = min(2 ** attempt, 8)
+                    logger.warning(f"Gemini 429 — retry {attempt+1}/3 in {wait}s")
+                    time.sleep(wait)
+                    continue
+                else:
+                    logger.warning(f"Gemini {resp.status_code}: {resp.text[:200]}")
+                    break  # Non-429 error → fall through to DeepSeek
+            except Exception as e:
+                logger.error(f"Gemini error: {e}")
+                break
+
+    # ── Fallback: DeepSeek ($0.28/1M) ─────────────────────────
+    if deepseek_key:
+        try:
+            resp = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {deepseek_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "max_tokens": 1024, "temperature": 0.7,
+                },
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+            logger.warning(f"DeepSeek {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error(f"DeepSeek error: {e}")
+
+    # ── Both failed ───────────────────────────────────────────
+    if lang == "he":
+        return "⚠️ שירות הצ'אט לא זמין כרגע. השתמש ב-/task לביצוע משימות."
+    return "⚠️ Chat unavailable. Use /task for execution."
 
 
 # ── Bilingual string table ────────────────────────────────────
