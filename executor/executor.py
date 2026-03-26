@@ -511,21 +511,17 @@ def telegram_polling_loop():
 
 # ── Main ──────────────────────────────────────────────────────
 def main():
-    # Start Telegram polling in background thread
-    if TELEGRAM_BOT_TOKEN:
-        tg_thread = Thread(target=telegram_polling_loop, daemon=True)
-        tg_thread.start()
-        print(f"📱 Telegram bot active: polling for @AgentRemote_bot")
-        if ALLOWED_CHAT_ID:
-            print(f"   Auth: only chat_id {ALLOWED_CHAT_ID}")
-        else:
-            print(f"   Auth: OPEN (set ALLOWED_CHAT_ID to restrict)")
-    else:
-        print("📱 Telegram: DISABLED (no TELEGRAM_BOT_TOKEN)")
+    # ── Telegram polling DISABLED (2026-03-25) ────────────────
+    # bot_v5.py on Render is the canonical Telegram interface.
+    # Dual-polling the same bot token causes SSL conflicts and
+    # crashes. This executor is HTTP-only now — receives tasks
+    # via POST /execute from GHA SSH dispatches.
+    print("📱 Telegram polling: DISABLED (Render bot_v5.py is canonical)")
 
     # Start HTTP server
     server = HTTPServer(("0.0.0.0", PORT), AgentHandler)
     print(f"🤖 AgentRemote V5 Executor running on port {PORT}")
+    print(f"   Mode: HTTP-only (no Telegram polling)")
     print(f"   Claude CLI: {CLAUDE_CMD}")
     print(f"   Max task duration: {MAX_TASK_DURATION}s")
     print(f"   Supabase: {'configured' if SUPABASE_KEY else 'NOT configured'}")
