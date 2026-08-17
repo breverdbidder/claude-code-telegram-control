@@ -5,7 +5,7 @@
 
 set -e
 
-GH_TOKEN="${GH_TOKEN:-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}"
+GH_TOKEN="${GH_TOKEN:?Set GH_TOKEN env var}"
 REPOS=(
   "breverdbidder/zonewise-agents"
   "breverdbidder/zonewise-desktop"
