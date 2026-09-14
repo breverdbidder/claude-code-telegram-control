@@ -1,0 +1,5 @@
+# Gitleaks baseline 2026-09-13 - pre-existing findings triaged as dead/placeholder by trufflehog verified sweep.
+# Remove an entry only when the underlying file/history is cleaned. New secrets still fail the gate.
+38ffcabdc68e50007e9186ad6e7363fb3567122d:executor/.env.example:telegram-bot-api-token:12
+38ffcabdc68e50007e9186ad6e7363fb3567122d:executor/.env.example:telegram-bot-token:12
+6c7c3072bce9387413243283c9b8ee21423362ed:propagate_secrets.sh:github-pat:8
